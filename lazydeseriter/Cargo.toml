@@ -1,0 +1,17 @@
+[package]
+name = "lazydeseriter"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+quote = "1.0.26"
+syn = "2.0.8"
+proc-macro2 = "1.0.53"
+
+[dev-dependencies]
+trybuild = "1.0.80"
+
+[lib]
+proc-macro = true
