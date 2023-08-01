@@ -24,75 +24,10 @@ lazy_static! {
         RwLock::new(HashMap::new());
 }
 
-
 pub trait SharedSpace: Clone {
     type HigherLevel: SharedSpace;
     fn new() -> Self;
     fn link_foreign(&mut self, foreign: Option<Arc<dyn ForeignInterface<Self::HigherLevel>>>);
-    fn duplicate(
-        &self,
-        source: &Point,
-        maybe_range: Option<std::ops::Range<usize>>,
-    ) -> Vec<AtomicU8Arc>{
-        vec![Arc::new(Atomic::new(0))]
-    }
-    fn duplicate_to(
-        &mut self,
-        source: &Point,
-        target: Point,
-        maybe_range: Option<std::ops::Range<usize>>,
-    ){}
-    fn link_to(
-        &mut self,
-        source: &Point,
-        target: Point,
-        maybe_range: Option<std::ops::Range<usize>>,
-    ){}
-    fn get(
-        &self,
-        point: &Point,
-        maybe_range: Option<std::ops::Range<usize>>,
-    ) -> Arc<Vec<AtomicU8Arc>>{
-        Arc::new(Vec::new())
-    }
-    fn inner_get(&self, point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>>;
-    fn set(&mut self, point: Point, vec: Vec<AtomicU8Arc>){}
-    fn mutate<F>(&mut self, point: &Point, maybe_range: Option<std::ops::Range<usize>>, func: F)
-    where F: FnOnce(&mut Arc<Vec<AtomicU8Arc>>){}
-}
-
-pub trait ForeignInterface<SharedSpace> {
-    fn registered_spaces(&self) -> Vec<Point>;
-    fn get_addressed_space(&self, address: Point) -> Option<Arc<Mutex<SharedSpace>>>;
-}
-
-impl<S: SharedSpace> ForeignInterface<S> for () {
-    fn registered_spaces(&self) -> Vec<Point> {
-        Vec::new()
-    }
-    fn get_addressed_space(&self, _address: Point) -> Option<Arc<Mutex<S>>>{
-        None
-    }
-}
-
-#[derive(Clone)]
-pub struct LocalSharedSpace {
-    inner: HashMap<Point, Arc<Vec<AtomicU8Arc>>>,
-    foreign: Option<Arc<dyn ForeignInterface<DiskSharedSpace>>>,
-}
-
-impl SharedSpace for LocalSharedSpace {
-    type HigherLevel = DiskSharedSpace;
-    fn new() -> Self {
-        LocalSharedSpace {
-            inner: HashMap::new(),
-            foreign: None
-        }
-    }
-
-    fn link_foreign(&mut self, foreign: Option<Arc<dyn ForeignInterface<DiskSharedSpace>>>){
-        self.foreign = foreign;
-    }
 
     fn duplicate(
         &self,
@@ -114,7 +49,7 @@ impl SharedSpace for LocalSharedSpace {
         maybe_range: Option<std::ops::Range<usize>>,
     ) {
         let new_bytevec = self.duplicate(source, maybe_range);
-        self.inner.insert(target, Arc::new(new_bytevec));
+        self.set(target, new_bytevec);
     }
 
     fn link_to(
@@ -124,7 +59,7 @@ impl SharedSpace for LocalSharedSpace {
         maybe_range: Option<std::ops::Range<usize>>,
     ) {
         let source_bytevec = self.get(source, maybe_range);
-        self.inner.insert(target, source_bytevec);
+        self.set(target, source_bytevec.to_vec());
     }
 
     fn get(
@@ -134,7 +69,7 @@ impl SharedSpace for LocalSharedSpace {
     ) -> Arc<Vec<AtomicU8Arc>> {
         let requested_range = maybe_range.unwrap_or(0..8);
 
-        if let Some(vec) = self.inner.get(point) {
+        if let Some(vec) = self.inner_get(point) {
             if vec.len() >= requested_range.end {
                 // We can return a reference to the existing vector directly
                 Arc::clone(vec)
@@ -162,14 +97,8 @@ impl SharedSpace for LocalSharedSpace {
         }
     }
 
-    fn inner_get(&self, point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>> {
-        self.inner.get(point)
-    }
-
-    fn set(&mut self, point: Point, vec: Vec<AtomicU8Arc>) {
-        self.inner.insert(point, Arc::new(vec));
-    }
-
+    fn inner_get(&self, point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>>;
+    fn set(&mut self, point: Point, vec: Vec<AtomicU8Arc>);
     fn mutate<F>(&mut self, point: &Point, maybe_range: Option<std::ops::Range<usize>>, func: F)
     where
         F: FnOnce(&mut Arc<Vec<AtomicU8Arc>>),
@@ -178,9 +107,6 @@ impl SharedSpace for LocalSharedSpace {
         func(&mut bitvec);
         self.set(point.clone(), bitvec.to_vec());
     }
-}
-
-impl LocalSharedSpace {
 
     fn init_rand(&self, point: Point, range: std::ops::Range<usize>) -> Vec<u8> {
         let memoized_points = MEMOIZED_POINTS.read().unwrap();
@@ -223,7 +149,48 @@ impl LocalSharedSpace {
             .fold(0u64, |acc, &x| acc.rotate_left(1) ^ (x as u64));
         ChaCha8Rng::seed_from_u64(seed)
     }
+}
 
+pub trait ForeignInterface<SharedSpace> {
+    fn registered_spaces(&self) -> Vec<Point>;
+    fn get_addressed_space(&self, address: Point) -> Option<Arc<Mutex<SharedSpace>>>;
+}
+
+impl<S: SharedSpace> ForeignInterface<S> for () {
+    fn registered_spaces(&self) -> Vec<Point> {
+        Vec::new()
+    }
+    fn get_addressed_space(&self, _address: Point) -> Option<Arc<Mutex<S>>> {
+        None
+    }
+}
+
+#[derive(Clone)]
+pub struct LocalSharedSpace {
+    inner: HashMap<Point, Arc<Vec<AtomicU8Arc>>>,
+    foreign: Option<Arc<dyn ForeignInterface<DiskSharedSpace>>>,
+}
+
+impl SharedSpace for LocalSharedSpace {
+    type HigherLevel = DiskSharedSpace;
+    fn new() -> Self {
+        LocalSharedSpace {
+            inner: HashMap::new(),
+            foreign: None,
+        }
+    }
+
+    fn link_foreign(&mut self, foreign: Option<Arc<dyn ForeignInterface<DiskSharedSpace>>>) {
+        self.foreign = foreign;
+    }
+
+    fn inner_get(&self, point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>> {
+        self.inner.get(point)
+    }
+
+    fn set(&mut self, point: Point, vec: Vec<AtomicU8Arc>) {
+        self.inner.insert(point, Arc::new(vec));
+    }
 }
 
 #[derive(Clone)]
@@ -233,17 +200,19 @@ pub struct DiskSharedSpace {
 
 impl SharedSpace for DiskSharedSpace {
     type HigherLevel = RemoteSharedSpace;
-        fn new() -> Self {
-        DiskSharedSpace {
-            foreign: None
-        }
+    fn new() -> Self {
+        DiskSharedSpace { foreign: None }
     }
 
-    fn link_foreign(&mut self, foreign: Option<Arc<dyn ForeignInterface<RemoteSharedSpace>>>){
+    fn set(&mut self, _point: Point, _vec: Vec<AtomicU8Arc>) {
+        unimplemented!()
+    }
+
+    fn link_foreign(&mut self, foreign: Option<Arc<dyn ForeignInterface<RemoteSharedSpace>>>) {
         self.foreign = foreign;
     }
 
-    fn inner_get(&self, point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>>{
+    fn inner_get(&self, _point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>> {
         unimplemented!()
     }
 }
@@ -256,21 +225,22 @@ pub struct RemoteSharedSpace {
 
 impl SharedSpace for RemoteSharedSpace {
     type HigherLevel = RemoteSharedSpace;
-    
+
     fn new() -> Self {
-        RemoteSharedSpace {
-            foreign: None
-        }
+        RemoteSharedSpace { foreign: None }
     }
 
-    fn link_foreign(&mut self, foreign: Option<Arc<dyn ForeignInterface<RemoteSharedSpace>>>){
-        self.foreign = foreign;
-    }
-
-    fn inner_get(&self, point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>>{
+    fn set(&mut self, _point: Point, _vec: Vec<AtomicU8Arc>) {
         unimplemented!()
     }
 
+    fn link_foreign(&mut self, foreign: Option<Arc<dyn ForeignInterface<RemoteSharedSpace>>>) {
+        self.foreign = foreign;
+    }
+
+    fn inner_get(&self, _point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>> {
+        unimplemented!()
+    }
 }
 
 struct RegionPoints {
@@ -456,8 +426,10 @@ impl<'a, S: SharedSpace + Clone> DesparsedRegionView<'a, S> {
 
         while !self.stack.is_empty() || self.visited.len() < self.points_map.len() {
             if self.stack.is_empty() {
-                if let Some(unvisited_point) =
-                    self.points_map.keys().find(|k| !self.visited.contains(k.clone()))
+                if let Some(unvisited_point) = self
+                    .points_map
+                    .keys()
+                    .find(|k| !self.visited.contains(k.clone()))
                 {
                     self.stack.push(unvisited_point.clone());
                 }
@@ -485,7 +457,7 @@ impl<'a, S: SharedSpace + Clone> DesparsedRegionView<'a, S> {
     }
 }
 
-impl<'a, S: SharedSpace + Clone> Iterator for DesparsedRegionView<'a, S>{
+impl<'a, S: SharedSpace + Clone> Iterator for DesparsedRegionView<'a, S> {
     type Item = (Point, Arc<Vec<AtomicU8Arc>>);
 
     fn next(&mut self) -> Option<Self::Item> {
