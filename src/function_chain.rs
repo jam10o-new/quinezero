@@ -1,5 +1,5 @@
 use crate::space::prelude::*;
-use crate::space::{LiveRegionView, SharedSpace as SharedSpaceTrait, DesparsedRegionView};
+use crate::space::{LiveRegionView, SharedSpace, LocalSharedSpace, DesparsedRegionView};
 use itertools::Itertools;
 use lazydeseriter::LazyDeserializer;
 use num_bigint::{BigInt, BigUint};
@@ -288,8 +288,8 @@ pub enum FunctionChain {
     ForeignContext(Box<FunctionChain>, Box<FunctionChain>)
 }
 
-pub fn follow_reference<SharedSpace: SharedSpaceTrait>(
-    context: &mut SharedSpace,
+pub fn follow_reference<S: SharedSpace + Clone>(
+    context: &mut S,
     fc: Box<FunctionChain>,
     bpd: _dims::BytesPerDim,
 ) -> Vec<u8> {
@@ -297,8 +297,8 @@ pub fn follow_reference<SharedSpace: SharedSpaceTrait>(
     FunctionChainLazyDeserializer::new(context.get(&point, None)).to_bytes()
 }
 
-pub fn ref_as_code<SharedSpace: SharedSpaceTrait>(
-    context: &mut SharedSpace,
+pub fn ref_as_code<S: SharedSpace + Clone>(
+    context: &mut S,
     fc: Box<FunctionChain>,
     bpd: _dims::BytesPerDim,
 ) -> Vec<FunctionChain> {
@@ -306,8 +306,8 @@ pub fn ref_as_code<SharedSpace: SharedSpaceTrait>(
     FunctionChainLazyDeserializer::new(context.get(&point, None)).collect()
 }
 
-pub fn follow_byte_reference<SharedSpace: SharedSpaceTrait>(
-    context: &SharedSpace,
+pub fn follow_byte_reference<S: SharedSpace + Clone>(
+    context: &S,
     bytes: Vec<u8>,
     bpd: _dims::BytesPerDim,
 ) -> Vec<u8> {
@@ -315,8 +315,8 @@ pub fn follow_byte_reference<SharedSpace: SharedSpaceTrait>(
     FunctionChainLazyDeserializer::new(context.get(&point, None)).to_bytes()
 }
 
-pub fn byte_ref_as_code<SharedSpace: SharedSpaceTrait>(
-    context: &SharedSpace,
+pub fn byte_ref_as_code<S: SharedSpace + Clone>(
+    context: &S,
     bytes: Vec<u8>,
     bpd: _dims::BytesPerDim,
 ) -> Vec<FunctionChain> {
@@ -324,13 +324,13 @@ pub fn byte_ref_as_code<SharedSpace: SharedSpaceTrait>(
     FunctionChainLazyDeserializer::new(context.get(&point, None)).collect()
 }
 
-pub fn exec_function_chains<SharedSpace: SharedSpaceTrait>(context: &mut SharedSpace, fcs: Vec<FunctionChain>) -> Vec<u8> {
+pub fn exec_function_chains<S: SharedSpace + Clone>(context: &mut S, fcs: Vec<FunctionChain>) -> Vec<u8> {
     fcs.into_iter()
         .flat_map(|fc| exec_function_chain(context, Box::new(fc)))
         .collect()
 }
 
-pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSpace, fc: Box<FunctionChain>) -> Vec<u8> {
+pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<FunctionChain>) -> Vec<u8> {
     let maybe_dim: Cell<Option<_dims::BytesPerDim>> = Cell::new(None);
     match *fc {
         //set maybe_dim if neccesary using if guard expression side-effects!
@@ -1372,11 +1372,11 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
             );
             let index = BigUint::from_bytes_le(&exec_function_chain(context, child_index));
 
-            context.mutate(&point, None, |extant| {
+            context.mutate(&point, None, Box::new(|extant| {
                 let skip_amt = (extant.len() - index % extant.len()).to_usize().unwrap();
                 let new = extant.iter().skip(skip_amt).cloned().collect();
                 *extant = Arc::new(new);
-            });
+            }));
             Vec::new()
         }
         FunctionChain::DropEndFrom(child_point, child_index) => {
@@ -1386,11 +1386,11 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
             );
             let index = BigUint::from_bytes_le(&exec_function_chain(context, child_index));
 
-            context.mutate(&point, None, |extant| {
+            context.mutate(&point, None, Box::new(|extant| {
                 let take_amt: usize = (extant.len() - index % extant.len()).to_usize().unwrap();
                 let new = extant.iter().take(take_amt).cloned().collect();
                 *extant = Arc::new(new);
-            });
+            }));
             Vec::new()
         }
         FunctionChain::DropStartFromReference(child_point, child_index) => {
@@ -1400,11 +1400,11 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
             );
             let index = BigUint::from_bytes_le(&exec_function_chain(context, child_index));
 
-            context.mutate(&point, None, |extant| {
+            context.mutate(&point, None, Box::new(|extant| {
                 let skip_amt = (extant.len() - index % extant.len()).to_usize().unwrap();
                 let new = extant.iter().skip(skip_amt).cloned().collect();
                 *extant = Arc::new(new);
-            });
+            }));
             Vec::new()
         }
         FunctionChain::DropEndFromReference(child_point, child_index) => {
@@ -1416,11 +1416,11 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
                 .to_usize()
                 .unwrap();
 
-            context.mutate(&point, None, |extant| {
+            context.mutate(&point, None, Box::new(move |extant| {
                 let take_amt: usize = (extant.len() - index % extant.len()).to_usize().unwrap();
                 let new = extant.iter().take(take_amt).cloned().collect();
                 *extant = Arc::new(new);
-            });
+            }));
             Vec::new()
         }
         FunctionChain::DropStartFromRunReference(child_point, child_index) => {
@@ -1431,11 +1431,11 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
             );
             let index = BigUint::from_bytes_le(&exec_function_chain(context, child_index));
 
-            context.mutate(&point, None, |extant| {
+            context.mutate(&point, None, Box::new(|extant| {
                 let skip_amt = (extant.len() - index % extant.len()).to_usize().unwrap();
                 let new = extant.iter().skip(skip_amt).cloned().collect();
                 *extant = Arc::new(new);
-            });
+            }));
             Vec::new()
         }
         FunctionChain::DropEndFromRunReference(child_point, child_index) => {
@@ -1446,11 +1446,11 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
             );
             let index = BigUint::from_bytes_le(&exec_function_chain(context, child_index));
 
-            context.mutate(&point, None, |extant| {
+            context.mutate(&point, None, Box::new(|extant| {
                 let take_amt: usize = (extant.len() - index % extant.len()).to_usize().unwrap();
                 let new = extant.iter().take(take_amt).cloned().collect();
                 *extant = Arc::new(new);
-            });
+            }));
             Vec::new()
         }
         FunctionChain::RangeFrom(child_point, child_start, child_end) => {
@@ -1464,10 +1464,10 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
             let start: usize = (start % usize::MAX).to_usize().unwrap();
             let end: usize = (end % usize::MAX).to_usize().unwrap();
 
-            context.mutate(&point, Some(start..end), |extant| {
+            context.mutate(&point, Some(start..end), Box::new(|extant| {
                 let new = extant.iter().cloned().collect();
                 *extant = Arc::new(new);
-            });
+            }));
             Vec::new()
         }
         FunctionChain::RangeFromReference(child_point, child_start, child_end) => {
@@ -1481,10 +1481,10 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
             let start: usize = (start % usize::MAX).to_usize().unwrap();
             let end: usize = (end % usize::MAX).to_usize().unwrap();
 
-            context.mutate(&point, Some(start..end), |extant| {
+            context.mutate(&point, Some(start..end), Box::new(|extant| {
                 let new = extant.iter().cloned().collect();
                 *extant = Arc::new(new);
-            });
+            }));
             Vec::new()
         }
         FunctionChain::RangeFromRunReference(child_point, child_start, child_end) => {
@@ -1499,10 +1499,10 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
             let start: usize = (start % usize::MAX).to_usize().unwrap();
             let end: usize = (end % usize::MAX).to_usize().unwrap();
 
-            context.mutate(&point, Some(start..end), |extant| {
+            context.mutate(&point, Some(start..end), Box::new(|extant| {
                 let new = extant.iter().cloned().collect();
                 *extant = Arc::new(new);
-            });
+            }));
             Vec::new()
         }
         FunctionChain::DeletePoint(point_child)
@@ -1522,15 +1522,12 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
                 exec_function_chain(context, point_child),
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
-            let mut count: usize = 0;
-            context.mutate(&point, None, |extant| {
+            context.mutate(&point, None, Box::new(move |extant| {
                 for element in extant.iter() {
                     element.store(0, Ordering::Release);
-                    count += 1;
                 }
-            });
-            let res = BigUint::from(count);
-            res.to_bytes_le()
+            }));
+            Vec::new()
         }
         FunctionChain::WriteToPoint(point_child, write_child)
         | FunctionChain::WriteToPoint2(point_child, write_child)
@@ -1540,7 +1537,8 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
             let write = exec_function_chain(context, write_child);
-            context.mutate(&point, None, |extant| {
+            let res = write.clone();
+            context.mutate(&point, None, Box::new(move |extant| {
                 let mut idx: usize = 0;
                 let mut new = Vec::new();
                 for &to_write in write.iter() {
@@ -1553,8 +1551,8 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
                     idx += 1;
                 }
                 *extant = Arc::new(new);
-            });
-            write
+            }));
+            res
         }
         FunctionChain::DuplicatePointToPoint(point_child, target_child)
         | FunctionChain::DuplicatePointToPoint2(point_child, target_child)
@@ -1614,11 +1612,11 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
             let region = LiveRegionView::new(&view_space, origin, dims);
             let extant_points_iter = region.iter_extant();
             for (point, _) in extant_points_iter {
-                context.mutate(&point, None, |extant| {
+                context.mutate(&point, None, Box::new(|extant| {
                     for element in extant.iter() {
                         element.store(0, Ordering::Release);
                     }
-                });
+                }));
             }
             Vec::new()
         }
@@ -1632,14 +1630,17 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
                 _dims::BytesPerDim::Four,
             );
             let write = exec_function_chain(context, write_child);
+            let res = write.clone();
             let view_space = context.clone();
             let region = LiveRegionView::new(&view_space, origin, dims);
             let extant_points_iter = region.iter_extant();
             for (point, _) in extant_points_iter {
-                context.mutate(&point, None, |extant| {
+
+                let copy_write = write.clone();
+                context.mutate(&point, None, Box::new(move |extant| {
                     let mut idx: usize = 0;
                     let mut new = Vec::new();
-                    for &to_write in write.iter() {
+                    for &to_write in copy_write.iter() {
                         if let Some(element) = extant.get(idx) {
                             element.store(to_write, Ordering::Release);
                             new.push(element.clone());
@@ -1649,9 +1650,9 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
                         idx += 1;
                     }
                     *extant = Arc::new(new);
-                });
+                }));
             }
-            write
+            res
         }
         FunctionChain::DesparseToN(
             origin_child,
@@ -1772,7 +1773,7 @@ pub fn exec_function_chain<SharedSpace: SharedSpaceTrait>(context: &mut SharedSp
             Vec::new()
         }
         FunctionChain::Isolate(child) => {
-            let mut new_context = SharedSpace::new();
+            let mut new_context = LocalSharedSpace::new();
             exec_function_chain(&mut new_context, child)
         }
         _ => {

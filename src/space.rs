@@ -24,10 +24,22 @@ lazy_static! {
         RwLock::new(HashMap::new());
 }
 
-pub trait SharedSpace: Clone {
-    type HigherLevel: SharedSpace;
-    fn new() -> Self;
-    fn link_foreign(&mut self, foreign: Option<Arc<dyn ForeignInterface<Self::HigherLevel>>>);
+pub trait SharedSpace {
+    fn get_registered_foreign(&self) -> Vec<Point>;
+    fn get_foreign_space(
+        &mut self,
+        address: &mut Vec<Point>,
+    ) -> Option<Arc<Mutex<dyn SharedSpace>>>;
+    fn get_foreign_point(&mut self, address: &mut Vec<Point>) -> Option<Arc<Vec<AtomicU8Arc>>> {
+        if let Some(highest) = address.pop() {
+            if let Some(space) = self.get_foreign_space(address){
+                let space_lock = space.lock().unwrap();
+                let val = space_lock.inner_get(&highest);
+                return val.cloned()
+            }
+        } 
+        None
+    }
 
     fn duplicate(
         &self,
@@ -99,10 +111,12 @@ pub trait SharedSpace: Clone {
 
     fn inner_get(&self, point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>>;
     fn set(&mut self, point: Point, vec: Vec<AtomicU8Arc>);
-    fn mutate<F>(&mut self, point: &Point, maybe_range: Option<std::ops::Range<usize>>, func: F)
-    where
-        F: FnOnce(&mut Arc<Vec<AtomicU8Arc>>),
-    {
+    fn mutate(
+        &mut self,
+        point: &Point,
+        maybe_range: Option<std::ops::Range<usize>>,
+        func: Box<dyn FnOnce(&mut Arc<Vec<AtomicU8Arc>>)>,
+    ) {
         let mut bitvec = self.get(point, maybe_range);
         func(&mut bitvec);
         self.set(point.clone(), bitvec.to_vec());
@@ -151,16 +165,16 @@ pub trait SharedSpace: Clone {
     }
 }
 
-pub trait ForeignInterface<SharedSpace> {
+pub trait ForeignInterface {
     fn registered_spaces(&self) -> Vec<Point>;
-    fn get_addressed_space(&self, address: Point) -> Option<Arc<Mutex<SharedSpace>>>;
+    fn get_addressed_space(&self, address: Point) -> Option<Arc<Mutex<dyn SharedSpace>>>;
 }
 
-impl<S: SharedSpace> ForeignInterface<S> for () {
+impl ForeignInterface for () {
     fn registered_spaces(&self) -> Vec<Point> {
         Vec::new()
     }
-    fn get_addressed_space(&self, _address: Point) -> Option<Arc<Mutex<S>>> {
+    fn get_addressed_space(&self, _address: Point) -> Option<Arc<Mutex<dyn SharedSpace>>> {
         None
     }
 }
@@ -168,20 +182,40 @@ impl<S: SharedSpace> ForeignInterface<S> for () {
 #[derive(Clone)]
 pub struct LocalSharedSpace {
     inner: HashMap<Point, Arc<Vec<AtomicU8Arc>>>,
-    foreign: Option<Arc<dyn ForeignInterface<DiskSharedSpace>>>,
+    foreign: Option<Arc<dyn ForeignInterface>>,
 }
 
-impl SharedSpace for LocalSharedSpace {
-    type HigherLevel = DiskSharedSpace;
-    fn new() -> Self {
+impl LocalSharedSpace {
+    pub fn new() -> Self {
         LocalSharedSpace {
             inner: HashMap::new(),
             foreign: None,
         }
     }
+}
 
-    fn link_foreign(&mut self, foreign: Option<Arc<dyn ForeignInterface<DiskSharedSpace>>>) {
-        self.foreign = foreign;
+impl SharedSpace for LocalSharedSpace {
+    fn get_foreign_space(&mut self, point: &mut Vec<Point>) -> Option<Arc<Mutex<dyn SharedSpace>>> {
+        if let Some(top_point) = point.pop() {
+            if let Some(foreign_interface) = self.foreign.as_ref() {
+                let top_space = foreign_interface.get_addressed_space(top_point);
+                if point.is_empty() {
+                    return top_space;
+                } else if let Some(space_mutex) = top_space {
+                    return space_mutex.lock().unwrap().get_foreign_space(point);
+                }
+            }
+        }
+        None
+    }
+    
+
+    fn get_registered_foreign(&self) -> Vec<Point> {
+        if let Some(foreign_interface) = self.foreign.as_ref() {
+            foreign_interface.registered_spaces()
+        } else {
+            Vec::new()
+        }
     }
 
     fn inner_get(&self, point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>> {
@@ -195,21 +229,40 @@ impl SharedSpace for LocalSharedSpace {
 
 #[derive(Clone)]
 pub struct DiskSharedSpace {
-    foreign: Option<Arc<dyn ForeignInterface<RemoteSharedSpace>>>,
+    foreign: Option<Arc<dyn ForeignInterface>>,
+}
+
+impl DiskSharedSpace {
+    pub fn new() -> Self {
+        DiskSharedSpace { foreign: None }
+    }
 }
 
 impl SharedSpace for DiskSharedSpace {
-    type HigherLevel = RemoteSharedSpace;
-    fn new() -> Self {
-        DiskSharedSpace { foreign: None }
-    }
-
     fn set(&mut self, _point: Point, _vec: Vec<AtomicU8Arc>) {
         unimplemented!()
     }
 
-    fn link_foreign(&mut self, foreign: Option<Arc<dyn ForeignInterface<RemoteSharedSpace>>>) {
-        self.foreign = foreign;
+    fn get_foreign_space(&mut self, point: &mut Vec<Point>) -> Option<Arc<Mutex<dyn SharedSpace>>> {
+        if let Some(top_point) = point.pop() {
+            if let Some(foreign_interface) = self.foreign.as_ref() {
+                let top_space = foreign_interface.get_addressed_space(top_point);
+                if point.is_empty() {
+                    return top_space;
+                } else if let Some(space_mutex) = top_space {
+                    return space_mutex.lock().unwrap().get_foreign_space(point);
+                }
+            }
+        }
+        None
+    }
+
+    fn get_registered_foreign(&self) -> Vec<Point> {
+        if let Some(foreign_interface) = self.foreign.as_ref() {
+            foreign_interface.registered_spaces()
+        } else {
+            Vec::new()
+        }
     }
 
     fn inner_get(&self, _point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>> {
@@ -220,22 +273,40 @@ impl SharedSpace for DiskSharedSpace {
 #[derive(Clone)]
 pub struct RemoteSharedSpace {
     // todo add a connection field when I know what networking should look like
-    foreign: Option<Arc<dyn ForeignInterface<RemoteSharedSpace>>>,
+    foreign: Option<Arc<dyn ForeignInterface>>,
+}
+
+impl RemoteSharedSpace {
+    pub fn new() -> Self {
+        RemoteSharedSpace { foreign: None }
+    }
 }
 
 impl SharedSpace for RemoteSharedSpace {
-    type HigherLevel = RemoteSharedSpace;
-
-    fn new() -> Self {
-        RemoteSharedSpace { foreign: None }
-    }
-
     fn set(&mut self, _point: Point, _vec: Vec<AtomicU8Arc>) {
         unimplemented!()
     }
 
-    fn link_foreign(&mut self, foreign: Option<Arc<dyn ForeignInterface<RemoteSharedSpace>>>) {
-        self.foreign = foreign;
+    fn get_foreign_space(&mut self, point: &mut Vec<Point>) -> Option<Arc<Mutex<dyn SharedSpace>>> {
+        if let Some(top_point) = point.pop() {
+            if let Some(foreign_interface) = self.foreign.as_ref() {
+                let top_space = foreign_interface.get_addressed_space(top_point);
+                if point.is_empty() {
+                    return top_space;
+                } else if let Some(space_mutex) = top_space {
+                    return space_mutex.lock().unwrap().get_foreign_space(point);
+                }
+            }
+        }
+        None
+    }
+
+    fn get_registered_foreign(&self) -> Vec<Point> {
+        if let Some(foreign_interface) = self.foreign.as_ref() {
+            foreign_interface.registered_spaces()
+        } else {
+            Vec::new()
+        }
     }
 
     fn inner_get(&self, _point: &Point) -> Option<&Arc<Vec<AtomicU8Arc>>> {
