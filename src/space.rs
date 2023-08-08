@@ -32,12 +32,12 @@ pub trait SharedSpace {
     ) -> Option<Arc<Mutex<dyn SharedSpace>>>;
     fn get_foreign_point(&mut self, address: &mut Vec<Point>) -> Option<Arc<Vec<AtomicU8Arc>>> {
         if let Some(highest) = address.pop() {
-            if let Some(space) = self.get_foreign_space(address){
+            if let Some(space) = self.get_foreign_space(address) {
                 let space_lock = space.lock().unwrap();
                 let val = space_lock.inner_get(&highest);
-                return val.cloned()
+                return val.cloned();
             }
-        } 
+        }
         None
     }
 
@@ -179,6 +179,31 @@ impl ForeignInterface for () {
     }
 }
 
+pub struct BasicForeignInterface {
+    inner: HashMap<Point, Arc<Mutex<dyn SharedSpace>>>,
+}
+
+impl BasicForeignInterface {
+    pub fn new() -> Self {
+        BasicForeignInterface {
+            inner: HashMap::new()
+        }
+    }
+
+    pub fn register_foreign_space(&mut self, address: Point, space: Arc<Mutex<dyn SharedSpace>>){
+        self.inner.insert(address, space);
+    }
+}
+
+impl ForeignInterface for BasicForeignInterface {
+    fn registered_spaces(&self) -> Vec<Point> {
+        self.inner.keys().cloned().collect()
+    }
+    fn get_addressed_space(&self, address: Point) -> Option<Arc<Mutex<dyn SharedSpace>>> {
+        self.inner.get(&address).cloned()
+    }
+}
+
 #[derive(Clone)]
 pub struct LocalSharedSpace {
     inner: HashMap<Point, Arc<Vec<AtomicU8Arc>>>,
@@ -189,7 +214,7 @@ impl LocalSharedSpace {
     pub fn new() -> Self {
         LocalSharedSpace {
             inner: HashMap::new(),
-            foreign: None,
+            foreign: Some(Arc::new(BasicForeignInterface::new())),
         }
     }
 }
@@ -208,7 +233,6 @@ impl SharedSpace for LocalSharedSpace {
         }
         None
     }
-    
 
     fn get_registered_foreign(&self) -> Vec<Point> {
         if let Some(foreign_interface) = self.foreign.as_ref() {
@@ -234,7 +258,7 @@ pub struct DiskSharedSpace {
 
 impl DiskSharedSpace {
     pub fn new() -> Self {
-        DiskSharedSpace { foreign: None }
+        DiskSharedSpace { foreign: Some(Arc::new(BasicForeignInterface::new())) }
     }
 }
 
@@ -278,7 +302,7 @@ pub struct RemoteSharedSpace {
 
 impl RemoteSharedSpace {
     pub fn new() -> Self {
-        RemoteSharedSpace { foreign: None }
+        RemoteSharedSpace { foreign: Some(Arc::new(BasicForeignInterface::new())) }
     }
 }
 
@@ -575,13 +599,11 @@ mod tests {
         let test_origin = vec![0, 0, 0, 0, 1];
         let test_dims = vec![0, 50, 3, 2, 0];
         for target_y in 0..50 {
-            if let Err(e) = world.duplicate_to(
+            world.duplicate_to(
                 &vec![0, 0, 0, 0, target_y],
                 vec![0, target_y, 0, 0, 1],
                 None,
-            ) {
-                panic!("{}", e);
-            }
+            )
         }
         let test_region = Arc::new(LiveRegionView::new(&world, test_origin, test_dims));
         let test_enum_full: Vec<TestEnum> = test_region

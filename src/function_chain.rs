@@ -1788,11 +1788,11 @@ mod tests {
 
     #[test]
     fn function_chain_execs() {
-        let world = SharedSpace::new();
-        let res0 = exec_function_chain(&world, Box::new(FunctionChain::One));
+        let mut world = LocalSharedSpace::new();
+        let res0 = exec_function_chain(&mut world, Box::new(FunctionChain::One));
         assert_eq!(res0, vec![1]);
         let res1 = exec_function_chain(
-            &world,
+            &mut world,
             Box::new(FunctionChain::Add(
                 Box::new(FunctionChain::One),
                 Box::new(FunctionChain::One),
