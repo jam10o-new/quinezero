@@ -9,6 +9,136 @@ use num_traits::{ToPrimitive, Zero};
 use std::cell::Cell;
 use std::ops::{Add, Div, Mul, Sub};
 
+mod lang {
+    use super::*;
+    pub enum Phrase {
+        Chain(FunctionChain),
+        Bytes(Vec<u8>),
+        Point(Point),
+        Name(Vec<u8>)
+    }
+    
+    const SILLY_NUMBER: i32 = -1;
+    const TEMP_NUMBER: i32 = -2;
+    const CHAIN_STORE: [i32; 8] = [0, 0, 0, 0, 0, SILLY_NUMBER, 0, 0];
+    const BYTE_STORE: [i32; 8] = [0, 0, 0, 0, 0, SILLY_NUMBER, 0, 1];
+    const POINT_STORE: [i32; 8] = [0, 0, 0, 0, 0, SILLY_NUMBER, 0, 2];
+    // names are converted to points and appended to the NAME_STORE,
+    // data contained is a point in one of the stores (constructed by suffixing the name)
+    // or a link to another name
+    const NAME_STORE: [i32; 8] = [0, 0, 0, 0, 0, SILLY_NUMBER, 0, 3];
+
+    fn name_to_point(name: Vec<u8>) -> Point {
+        let mut result: Point = NAME_STORE.clone().to_vec();
+        let mut suffix: Point = name.clone().iter().map(|&a| a as i32).collect();
+        result.append(&mut suffix);
+        result
+    }
+
+    fn gen_store_instruction(name: Vec<u8>, phrase: Phrase) -> FunctionChain {
+        let name_point = name_to_point(name);
+        let mut stored_data;
+        let data_point = match phrase {
+            Phrase::Chain(data) => {
+                stored_data = data.to_bytes();
+                let mut res = CHAIN_STORE.clone().to_vec();
+                let mut app = name_point.clone();
+                res.append(&mut app);
+                res
+            }
+            Phrase::Bytes(data) => {
+                stored_data = data.clone();
+                let mut res = BYTE_STORE.clone().to_vec();
+                let mut app = name_point.clone();
+                res.append(&mut app);
+                res
+            }
+            Phrase::Point(data) => {
+                stored_data = super::_dims::point_to_bytes(data);
+                let mut res = POINT_STORE.clone().to_vec();
+                let mut app = name_point.clone();
+                res.append(&mut app);
+                res
+            }
+            Phrase::Name(data) => {
+                stored_data = data.clone();
+                let res = name_to_point(data);
+                res
+            }
+        };
+        unimplemented!()
+    }
+    
+    enum PhraseType {
+        Chain,
+        Bytes,
+        Point,
+        Name
+    }
+    
+    struct ParamInfo {
+        parent_type: PhraseType,
+        idx: usize,
+    }
+    
+    pub struct StatementRunner {
+        // core stores temp vars and chains while
+        // building and executing a statement runner
+        core: LocalSharedSpace,
+        tmp: Vec<Phrase>,
+        compiled_params: Vec<ParamInfo>
+    }
+    
+    impl StatementRunner {
+        fn start() -> Self {
+            StatementRunner {
+                core: LocalSharedSpace::new(),
+                tmp: Vec::new(),
+                compiled_params: Vec::new()
+            }
+        }
+    
+        fn do_after(&mut self, p: Phrase) -> &Self {
+            self.tmp.push(p);
+            self
+        }
+     
+        fn name(&mut self, name: Vec<u8>, phrase: Phrase) -> &Self {
+            let instruction_chain = gen_store_instruction(name, phrase);
+            exec_function_chain(&mut self.core, Box::new(instruction_chain));
+            self
+        }
+    
+        fn sname(&mut self, name_str: String, phrase: Phrase) -> &Self {
+            let name = name_str.into_bytes();
+            let instruction_chain = gen_store_instruction(name, phrase);
+            exec_function_chain(&mut self.core, Box::new(instruction_chain));
+            self
+        }
+    
+        fn compile(&mut self) -> &Self {
+            //todo
+            self
+        }
+    
+        fn run<S: SharedSpace + Clone>(&mut self, space: &mut S) -> Vec<u8> {
+            unimplemented!()
+        }
+    
+        fn execute<S: SharedSpace + Clone>(&mut self, space: &mut S) -> &Self {
+            self
+        }
+    
+        fn run_with_params<S: SharedSpace + Clone>(&mut self, params: Vec<Phrase>, space: &mut S) -> Vec<u8> {
+            unimplemented!()
+        }
+    
+        fn execute_with_params<S: SharedSpace + Clone>(&mut self, params: Vec<Phrase>, space: &mut S) -> &Self {
+            self
+        }
+    }    
+}
+
 mod _dims {
     use crate::space::prelude::Point;
 
@@ -1771,6 +1901,54 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
                     .collect(),
             );
             Vec::new()
+        }
+        FunctionChain::Similarity(origin_c, dims_c, origin_c2, dims_c2, dim_n_c) => {
+            let origin = _dims::bytes_to_point(
+                exec_function_chain(context, origin_c),
+                _dims::BytesPerDim::Four,
+            );
+            let dims = _dims::bytes_to_point(
+                exec_function_chain(context, dims_c),
+                _dims::BytesPerDim::Four,
+            );
+            let origin2 = _dims::bytes_to_point(
+                exec_function_chain(context, origin_c2),
+                _dims::BytesPerDim::Four,
+            );
+            let dims2 = _dims::bytes_to_point(
+                exec_function_chain(context, dims_c2),
+                _dims::BytesPerDim::Four,
+            );
+            let target_dim = BigUint::from_bytes_le(&exec_function_chain(context, dim_n_c));
+            /*let score = BigUint::new();
+            let dest;
+            let dest_2;
+            let pre_dims;
+            let pre_dims_2;
+            let final_dest;
+            let final_dest_2;
+            let final_dims;
+            let final_dims_2;
+            // mutate space to target dimensionality
+            //   - if dims.len > N
+            //    - desparseToN
+            //   - foldToN
+            // label and link contiguous regions between spaces
+            //   - create iterator joining all points from both spaces
+            //    - create region number for point
+            //    - create map using fill algo to find all contiguous points
+            //    - iterate through region points,
+            //     - query region number of other space at that point
+            //     - (assign+fill if unavailable)
+            //    - map most common common region as corresponding
+            //    - increase score based on
+            //     - corresponding region overlap
+            //     - non-corresponding region overlap
+            //     - region non-overlap
+            //   - continue at next unregioned point.
+            // return total score
+            */
+            unimplemented!()
         }
         FunctionChain::Isolate(child) => {
             let mut new_context = LocalSharedSpace::new();
