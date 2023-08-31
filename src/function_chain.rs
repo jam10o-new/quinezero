@@ -35,6 +35,61 @@ mod lang {
         result
     }
 
+    // A simple functionchain with param 
+    // placeholders (End) that writes
+    // data to a point
+    fn fc_store_data_at_point_placeholder() -> FunctionChain {
+        FunctionChain::WriteToPoint4(
+            Box::new(
+                FunctionChain::Pass(
+                    Box::new(
+                        FunctionChain::End
+                    )
+                )
+            ),
+            Box::new(
+                FunctionChain::Pass(
+                    Box::new(
+                        FunctionChain::End
+                    )
+                )
+            )
+        )
+    }
+    
+    fn merge_function_chains(chains: Vec<FunctionChain>) -> FunctionChain {
+        if chains.is_empty() {
+            // Handle empty input appropriately; maybe return a FunctionChain::End or similar.
+            return FunctionChain::End;
+        }
+        chains.into_iter().fold(
+            FunctionChain::End, // Starting value, could also be chains[0] if guaranteed non-empty
+            |acc, chain| FunctionChain::ElseEager(
+                Box::new(acc),
+                Box::new(chain)
+            )
+        )
+    }
+
+    fn replace_placeholders(target: &mut Vec<u8>, replacements: &[Vec<u8>]) {
+        let mut i = 0;
+        let mut rep_idx = 0;
+    
+        while i < target.len() && rep_idx < replacements.len() {
+            if target[i] == 0u8 {
+                target.remove(i); // Remove the placeholder
+                let replacement = &replacements[rep_idx];
+                for &byte in replacement.iter().rev() {
+                    target.insert(i, byte); // Insert each byte in reverse so that the sequence remains as intended
+                }
+                i += replacement.len();
+                rep_idx += 1;
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     fn gen_store_instruction(name: Vec<u8>, phrase: Phrase) -> FunctionChain {
         let name_point = name_to_point(name);
         let mut stored_data;
@@ -66,7 +121,28 @@ mod lang {
                 res
             }
         };
-        unimplemented!()
+            // Step 1: Convert to Vec<u8>
+        let name_point_bytes = super::_dims::point_to_bytes(name_point);
+        let data_point_bytes = super::_dims::point_to_bytes(data_point);
+
+        // Step 2: Generate placeholder FunctionChains
+        let mut name_chain_bytes = fc_store_data_at_point_placeholder().to_bytes();
+        let mut data_chain_bytes = fc_store_data_at_point_placeholder().to_bytes();
+
+        // Step 3: Done in Step 2
+
+        // Step 4: Replace placeholders
+        replace_placeholders(&mut name_chain_bytes, &[name_point_bytes, data_point_bytes.clone()]);
+        replace_placeholders(&mut data_chain_bytes, &[data_point_bytes, stored_data]);
+
+        // Step 5: Convert back to FunctionChains
+        let name_chains = FunctionChain::from_bytes(name_chain_bytes);
+        let data_chains = FunctionChain::from_bytes(data_chain_bytes);
+
+        // Step 6: Merge
+        let final_chain = merge_function_chains([name_chains, data_chains].into_iter().flatten().collect());
+
+        final_chain
     }
     
     enum PhraseType {
@@ -126,6 +202,7 @@ mod lang {
         }
     
         fn execute<S: SharedSpace + Clone>(&mut self, space: &mut S) -> &Self {
+            self.run(space);
             self
         }
     
@@ -134,6 +211,7 @@ mod lang {
         }
     
         fn execute_with_params<S: SharedSpace + Clone>(&mut self, params: Vec<Phrase>, space: &mut S) -> &Self {
+            self.run_with_params(params, space);
             self
         }
     }    
@@ -237,7 +315,7 @@ pub enum FunctionChain {
     MulAsFloats(Box<FunctionChain>, Box<FunctionChain>),
     DivAsFloats(Box<FunctionChain>, Box<FunctionChain>),
 
-    // Functions that read from ring buffers and foreign memory, including references
+    // Functions that read, including references
     Reference(Box<FunctionChain>),
 
     // Maths with second parameter from within space, read point as Reference, first dimension
