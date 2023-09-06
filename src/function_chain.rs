@@ -9,7 +9,7 @@ use num_traits::{ToPrimitive, Zero};
 use std::cell::Cell;
 use std::ops::{Add, Div, Mul, Sub};
 
-mod lang {
+pub mod lang {
     use super::*;
     pub enum Phrase {
         Chain(FunctionChain),
@@ -90,6 +90,34 @@ mod lang {
         }
     }
 
+    fn compile_phrases<S: SharedSpace + Clone>(context: &mut S, params: Vec<Phrase>) -> Vec<Vec<u8>> {
+        params.iter().map(|phrase|{
+            match phrase {
+                Phrase::Chain(data) => {
+                    data.to_bytes()
+                }
+                Phrase::Bytes(data) => {
+                    data.clone()
+                }
+                Phrase::Point(data) => {
+                    _dims::point_to_bytes(data.clone())
+                }
+                Phrase::Name(data) => {
+                    let name_point = name_to_point(data.clone());
+                    let data_point_abytes = context.get(&name_point, None);
+                    let data_point_bytes = data_point_abytes.iter().map(|atomic_byte|{
+                        atomic_byte.load(Ordering::Acquire)
+                    }).collect();
+                    let data_point = _dims::bytes_to_point(data_point_bytes, _dims::BytesPerDim::Four);
+                    let data_abytes = context.get(&data_point, None);
+                    data_abytes.iter().map(|atomic_byte|{
+                        atomic_byte.load(Ordering::Acquire)
+                    }).collect()
+                }
+            }
+        }).collect()
+    }
+
     fn gen_store_instruction(name: Vec<u8>, phrase: Phrase) -> FunctionChain {
         let name_point = name_to_point(name);
         let mut stored_data;
@@ -121,56 +149,35 @@ mod lang {
                 res
             }
         };
-            // Step 1: Convert to Vec<u8>
         let name_point_bytes = super::_dims::point_to_bytes(name_point);
         let data_point_bytes = super::_dims::point_to_bytes(data_point);
 
-        // Step 2: Generate placeholder FunctionChains
         let mut name_chain_bytes = fc_store_data_at_point_placeholder().to_bytes();
         let mut data_chain_bytes = fc_store_data_at_point_placeholder().to_bytes();
 
-        // Step 3: Done in Step 2
-
-        // Step 4: Replace placeholders
         replace_placeholders(&mut name_chain_bytes, &[name_point_bytes, data_point_bytes.clone()]);
         replace_placeholders(&mut data_chain_bytes, &[data_point_bytes, stored_data]);
 
-        // Step 5: Convert back to FunctionChains
         let name_chains = FunctionChain::from_bytes(name_chain_bytes);
         let data_chains = FunctionChain::from_bytes(data_chain_bytes);
 
-        // Step 6: Merge
         let final_chain = merge_function_chains([name_chains, data_chains].into_iter().flatten().collect());
 
         final_chain
-    }
-    
-    enum PhraseType {
-        Chain,
-        Bytes,
-        Point,
-        Name
-    }
-    
-    struct ParamInfo {
-        parent_type: PhraseType,
-        idx: usize,
     }
     
     pub struct StatementRunner {
         // core stores temp vars and chains while
         // building and executing a statement runner
         core: LocalSharedSpace,
-        tmp: Vec<Phrase>,
-        compiled_params: Vec<ParamInfo>
+        tmp: Vec<Phrase>
     }
     
     impl StatementRunner {
         fn start() -> Self {
             StatementRunner {
                 core: LocalSharedSpace::new(),
-                tmp: Vec::new(),
-                compiled_params: Vec::new()
+                tmp: Vec::new()
             }
         }
     
@@ -198,7 +205,14 @@ mod lang {
         }
     
         fn run<S: SharedSpace + Clone>(&mut self, space: &mut S) -> Vec<u8> {
-            unimplemented!()
+            if !self.tmp.is_empty() {
+                self.compile();
+            }
+            let compiled_loc = vec![];
+            let bytes = self.core.get(&compiled_loc, None);
+            let iter = FunctionChainLazyDeserializer::new(bytes);
+            let fc = merge_function_chains(iter.collect());
+            exec_function_chain(space, Box::new(fc))
         }
     
         fn execute<S: SharedSpace + Clone>(&mut self, space: &mut S) -> &Self {
@@ -207,7 +221,18 @@ mod lang {
         }
     
         fn run_with_params<S: SharedSpace + Clone>(&mut self, params: Vec<Phrase>, space: &mut S) -> Vec<u8> {
-            unimplemented!()
+            if !self.tmp.is_empty() {
+                self.compile();
+            }
+            let compiled_loc = vec![];
+            let pre_bytes = self.core.get(&compiled_loc, None);
+            let iter = FunctionChainLazyDeserializer::new(pre_bytes);
+            let pre_fc = merge_function_chains(iter.collect());
+            let mut bytes = pre_fc.to_bytes();
+            let compiled_params = compile_phrases(&mut self.core, params);
+            replace_placeholders(&mut bytes, &compiled_params);
+            let fc = merge_function_chains(FunctionChain::from_bytes(bytes));
+            exec_function_chain(space, Box::new(fc))
         }
     
         fn execute_with_params<S: SharedSpace + Clone>(&mut self, params: Vec<Phrase>, space: &mut S) -> &Self {
