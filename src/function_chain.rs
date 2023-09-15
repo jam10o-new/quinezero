@@ -43,13 +43,19 @@ pub mod lang {
     macro_rules! fc {
         ($variant:ident $(, $( $child:tt ),* )? ) => {
             FunctionChain::$variant$((
-                $(Box::new(generate_function_chain!($child))),*
+                $(Box::new(fc!($child))),*
             ))?
         };
         (($variant:ident $(, $( $child:tt ),* )? )) => {
             FunctionChain::$variant$((
-                $(Box::new(generate_function_chain!($child))),*
+                $(Box::new(fc!($child))),*
             ))?
+        };
+        ([$boxed:tt]) => {
+            Box::new($boxed)
+        };
+        ({$literal:tt}) => {
+            $literal
         };
     }
 
@@ -65,13 +71,13 @@ pub mod lang {
     fn merge_function_chains(chains: Vec<FunctionChain>) -> FunctionChain {
         if chains.is_empty() {
             // Handle empty input appropriately; maybe return a FunctionChain::End or similar.
-            return FunctionChain::End;
+            return fc!( End );
         }
         chains.into_iter().fold(
-            FunctionChain::End, // Starting value, could also be chains[0] if guaranteed non-empty
-            |acc, chain| FunctionChain::ElseEager(
-                Box::new(acc),
-                Box::new(chain)
+            fc!( End ), // Starting value, could also be chains[0] if guaranteed non-empty
+            |acc, chain| fc! ( ElseEager, 
+                {acc},
+                {chain}
             )
         )
     }
@@ -2135,14 +2141,11 @@ mod tests {
     #[test]
     fn function_chain_execs() {
         let mut world = LocalSharedSpace::new();
-        let res0 = exec_function_chain(&mut world, Box::new(FunctionChain::One));
+        let res0 = exec_function_chain(&mut world, Box::new(fc!(One)));
         assert_eq!(res0, vec![1]);
         let res1 = exec_function_chain(
             &mut world,
-            Box::new(FunctionChain::Add(
-                Box::new(FunctionChain::One),
-                Box::new(FunctionChain::One),
-            )),
+            Box::new(fc!(Add, One, One)),
         );
         assert_eq!(res1, vec![2]);
     }
