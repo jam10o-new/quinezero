@@ -1,3 +1,4 @@
+
 use crate::space::prelude::*;
 use crate::space::{LiveRegionView, SharedSpace, LocalSharedSpace, DesparsedRegionView};
 use itertools::Itertools;
@@ -10,7 +11,10 @@ use std::cell::Cell;
 use std::ops::{Add, Div, Mul, Sub};
 
 pub mod lang {
+
     use super::*;
+
+    #[derive(Clone)]
     pub enum Phrase {
         Chain(FunctionChain),
         Bytes(Vec<u8>),
@@ -35,26 +39,27 @@ pub mod lang {
         result
     }
 
+    //this is black magic and was a complete PITA to figure out :crying:
+    macro_rules! fc {
+        ($variant:ident $(, $( $child:tt ),* )? ) => {
+            FunctionChain::$variant$((
+                $(Box::new(generate_function_chain!($child))),*
+            ))?
+        };
+        (($variant:ident $(, $( $child:tt ),* )? )) => {
+            FunctionChain::$variant$((
+                $(Box::new(generate_function_chain!($child))),*
+            ))?
+        };
+    }
+
     // A simple functionchain with param 
     // placeholders (End) that writes
     // data to a point
     fn fc_store_data_at_point_placeholder() -> FunctionChain {
-        FunctionChain::WriteToPoint4(
-            Box::new(
-                FunctionChain::Pass(
-                    Box::new(
-                        FunctionChain::End
-                    )
-                )
-            ),
-            Box::new(
-                FunctionChain::Pass(
-                    Box::new(
-                        FunctionChain::End
-                    )
-                )
-            )
-        )
+        fc! {
+            WriteToPoint4, (Pass, End), (Pass, End)
+        }
     }
     
     fn merge_function_chains(chains: Vec<FunctionChain>) -> FunctionChain {
@@ -71,19 +76,34 @@ pub mod lang {
         )
     }
 
+    fn count_placeholders(target: &Vec<u8>) -> usize {
+        if target.len() == 1 {
+            // explicit end, has no children
+            // shouldn't be replaced in compile step
+            0
+        } else {
+            target.iter().filter(|&n| *n == 0u8).count()
+        }
+    }
+
     fn replace_placeholders(target: &mut Vec<u8>, replacements: &[Vec<u8>]) {
         let mut i = 0;
         let mut rep_idx = 0;
     
         while i < target.len() && rep_idx < replacements.len() {
             if target[i] == 0u8 {
-                target.remove(i); // Remove the placeholder
-                let replacement = &replacements[rep_idx];
-                for &byte in replacement.iter().rev() {
-                    target.insert(i, byte); // Insert each byte in reverse so that the sequence remains as intended
+                let pholder = target.remove(i); // Remove the placeholder
+                if let Some(replacement) = replacements.get(rep_idx){
+                    for &byte in replacement.iter().rev() {
+                        target.insert(i, byte); // Insert each byte in reverse so that the sequence remains as intended
+                    }
+                    i += replacement.len();
+                    rep_idx += 1; 
+                } else {
+                    target.insert(i, pholder);
+                    i += 1;
+                    rep_idx += 1;
                 }
-                i += replacement.len();
-                rep_idx += 1;
             } else {
                 i += 1;
             }
@@ -200,7 +220,46 @@ pub mod lang {
         }
     
         fn compile(&mut self) -> &Self {
-            //todo
+            // Create an empty list to hold the roots of the function tree
+            let mut function_tree_roots: Vec<FunctionChain> = Vec::new();
+            
+            // Process the phrases to build the function tree
+            while !self.tmp.is_empty() {
+            // Take the next phrase from the remaining phrases
+            let current_phrase = self.tmp.remove(0);
+            let mut cur_res;
+            
+                // Check if it's a Chain phrase
+                if let Phrase::Chain(function_chain) = current_phrase {
+                    // Count the number of placeholders in the function chain
+                    let num_placeholders = count_placeholders(&function_chain.to_bytes());
+                    
+                    // Consume the next `num_placeholders` phrases from the remaining phrases
+                    let consumed_phrases: Vec<Phrase> = self.tmp.drain(..num_placeholders).collect();
+                    
+                    // Compile the consumed phrases into a new function chain
+                    let compiled_phrases = compile_phrases(&mut self.core, consumed_phrases);
+                    let mut fc_bytes = function_chain.to_bytes();
+                    replace_placeholders(&mut fc_bytes, &compiled_phrases);
+                    cur_res = merge_function_chains(FunctionChain::from_bytes(fc_bytes));
+                } else {
+                    let compiled = compile_phrases(&mut self.core, vec![current_phrase]).iter().flat_map(|bytes|FunctionChain::from_bytes(bytes.clone())).collect();
+                    cur_res = merge_function_chains(compiled);
+                }
+                
+                // Add the current phrase's function chain to the list of roots
+                function_tree_roots.push(cur_res);
+            }
+            
+            // Merge the roots into a single function tree
+            let final_function_tree = merge_function_chains(function_tree_roots);
+            
+            let compiled_loc = vec![];
+            self.core.set(compiled_loc, final_function_tree.to_bytes()
+                .iter()
+                .map(|&byte| Arc::new(Atomic::new(byte)))
+                .collect()
+            );
             self
         }
     
@@ -298,6 +357,7 @@ pub enum FunctionChain {
     End, // also 0
     One,
     // Pure functions
+    Eq(Box<FunctionChain>, Box<FunctionChain>),
     Add(Box<FunctionChain>, Box<FunctionChain>),
     Sub(Box<FunctionChain>, Box<FunctionChain>),
     Mul(Box<FunctionChain>, Box<FunctionChain>),
@@ -624,6 +684,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         FunctionChain::End => Vec::new(),
         FunctionChain::One => {
             vec![1]
+        }
+        FunctionChain::Eq(child0, child1) => {
+            let child_res0 = exec_function_chain(context, child0);
+            let child_res1 = exec_function_chain(context, child1);
+            if child_res0 == child_res1 { vec![1] } else { vec![0] }
         }
         FunctionChain::Add(child0, child1) => {
             let child_res0 = exec_function_chain(context, child0);
