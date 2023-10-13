@@ -1,6 +1,5 @@
-
 use crate::space::prelude::*;
-use crate::space::{LiveRegionView, SharedSpace, LocalSharedSpace, DesparsedRegionView};
+use crate::space::{DesparsedRegionView, LiveRegionView, LocalSharedSpace, SharedSpace};
 use itertools::Itertools;
 use lazydeseriter::LazyDeserializer;
 use num_bigint::{BigInt, BigUint};
@@ -9,6 +8,27 @@ use num_rational::Ratio;
 use num_traits::{ToPrimitive, Zero};
 use std::cell::Cell;
 use std::ops::{Add, Div, Mul, Sub};
+use std::collections::HashMap;
+
+
+macro_rules! fc {
+    ($variant:ident $(, $( $child:tt ),* )? ) => {
+        FunctionChain::$variant$((
+            $(Box::new(fc!($child))),*
+        ))?
+    };
+    (($variant:ident $(, $( $child:tt ),* )? )) => {
+        FunctionChain::$variant$((
+            $(Box::new(fc!($child))),*
+        ))?
+    };
+    ([$boxed:tt]) => {
+        lang::merge_function_chains(FunctionChain::from_bytes($boxed.clone()))
+    };
+    ({$literal:tt}) => {
+        $literal
+    };
+}
 
 pub mod lang {
 
@@ -19,9 +39,9 @@ pub mod lang {
         Chain(FunctionChain),
         Bytes(Vec<u8>),
         Point(Point),
-        Name(Vec<u8>)
+        Name(Vec<u8>),
     }
-    
+
     const SILLY_NUMBER: i32 = -1;
     const TEMP_NUMBER: i32 = -2;
     const CHAIN_STORE: [i32; 8] = [0, 0, 0, 0, 0, SILLY_NUMBER, 0, 0];
@@ -39,27 +59,7 @@ pub mod lang {
         result
     }
 
-    //this is black magic and was a complete PITA to figure out :crying:
-    macro_rules! fc {
-        ($variant:ident $(, $( $child:tt ),* )? ) => {
-            FunctionChain::$variant$((
-                $(Box::new(fc!($child))),*
-            ))?
-        };
-        (($variant:ident $(, $( $child:tt ),* )? )) => {
-            FunctionChain::$variant$((
-                $(Box::new(fc!($child))),*
-            ))?
-        };
-        ([$boxed:tt]) => {
-            Box::new($boxed)
-        };
-        ({$literal:tt}) => {
-            $literal
-        };
-    }
-
-    // A simple functionchain with param 
+    // A simple functionchain with param
     // placeholders (End) that writes
     // data to a point
     fn fc_store_data_at_point_placeholder() -> FunctionChain {
@@ -67,19 +67,17 @@ pub mod lang {
             WriteToPoint4, (Pass, End), (Pass, End)
         }
     }
-    
-    fn merge_function_chains(chains: Vec<FunctionChain>) -> FunctionChain {
+
+    pub fn merge_function_chains(chains: Vec<FunctionChain>) -> FunctionChain {
         if chains.is_empty() {
             // Handle empty input appropriately; maybe return a FunctionChain::End or similar.
-            return fc!( End );
+            return fc!(End);
+        } else {
+            chains.into_iter().reduce(
+                |acc, chain| fc!(ElseEager, { acc }, { chain }),
+            ).unwrap()
         }
-        chains.into_iter().fold(
-            fc!( End ), // Starting value, could also be chains[0] if guaranteed non-empty
-            |acc, chain| fc! ( ElseEager, 
-                {acc},
-                {chain}
-            )
-        )
+        
     }
 
     fn count_placeholders(target: &Vec<u8>) -> usize {
@@ -95,16 +93,16 @@ pub mod lang {
     fn replace_placeholders(target: &mut Vec<u8>, replacements: &[Vec<u8>]) {
         let mut i = 0;
         let mut rep_idx = 0;
-    
+
         while i < target.len() && rep_idx < replacements.len() {
             if target[i] == 0u8 {
                 let pholder = target.remove(i); // Remove the placeholder
-                if let Some(replacement) = replacements.get(rep_idx){
+                if let Some(replacement) = replacements.get(rep_idx) {
                     for &byte in replacement.iter().rev() {
                         target.insert(i, byte); // Insert each byte in reverse so that the sequence remains as intended
                     }
                     i += replacement.len();
-                    rep_idx += 1; 
+                    rep_idx += 1;
                 } else {
                     target.insert(i, pholder);
                     i += 1;
@@ -116,32 +114,33 @@ pub mod lang {
         }
     }
 
-    fn compile_phrases<S: SharedSpace + Clone>(context: &mut S, params: Vec<Phrase>) -> Vec<Vec<u8>> {
-        params.iter().map(|phrase|{
-            match phrase {
-                Phrase::Chain(data) => {
-                    data.to_bytes()
-                }
-                Phrase::Bytes(data) => {
-                    data.clone()
-                }
-                Phrase::Point(data) => {
-                    _dims::point_to_bytes(data.clone())
-                }
+    fn compile_phrases<S: SharedSpace + Clone>(
+        context: &mut S,
+        params: Vec<Phrase>,
+    ) -> Vec<Vec<u8>> {
+        params
+            .iter()
+            .map(|phrase| match phrase {
+                Phrase::Chain(data) => data.to_bytes(),
+                Phrase::Bytes(data) => data.clone(),
+                Phrase::Point(data) => _dims::point_to_bytes(data.clone()),
                 Phrase::Name(data) => {
                     let name_point = name_to_point(data.clone());
                     let data_point_abytes = context.get(&name_point, None);
-                    let data_point_bytes = data_point_abytes.iter().map(|atomic_byte|{
-                        atomic_byte.load(Ordering::Acquire)
-                    }).collect();
-                    let data_point = _dims::bytes_to_point(data_point_bytes, _dims::BytesPerDim::Four);
+                    let data_point_bytes = data_point_abytes
+                        .iter()
+                        .map(|atomic_byte| atomic_byte.load(Ordering::Acquire))
+                        .collect();
+                    let data_point =
+                        _dims::bytes_to_point(&data_point_bytes, _dims::BytesPerDim::Four);
                     let data_abytes = context.get(&data_point, None);
-                    data_abytes.iter().map(|atomic_byte|{
-                        atomic_byte.load(Ordering::Acquire)
-                    }).collect()
+                    data_abytes
+                        .iter()
+                        .map(|atomic_byte| atomic_byte.load(Ordering::Acquire))
+                        .collect()
                 }
-            }
-        }).collect()
+            })
+            .collect()
     }
 
     fn gen_store_instruction(name: Vec<u8>, phrase: Phrase) -> FunctionChain {
@@ -181,94 +180,105 @@ pub mod lang {
         let mut name_chain_bytes = fc_store_data_at_point_placeholder().to_bytes();
         let mut data_chain_bytes = fc_store_data_at_point_placeholder().to_bytes();
 
-        replace_placeholders(&mut name_chain_bytes, &[name_point_bytes, data_point_bytes.clone()]);
+        replace_placeholders(
+            &mut name_chain_bytes,
+            &[name_point_bytes, data_point_bytes.clone()],
+        );
         replace_placeholders(&mut data_chain_bytes, &[data_point_bytes, stored_data]);
 
         let name_chains = FunctionChain::from_bytes(name_chain_bytes);
         let data_chains = FunctionChain::from_bytes(data_chain_bytes);
 
-        let final_chain = merge_function_chains([name_chains, data_chains].into_iter().flatten().collect());
+        let final_chain =
+            merge_function_chains([name_chains, data_chains].into_iter().flatten().collect());
 
         final_chain
     }
-    
+
     pub struct StatementRunner {
         // core stores temp vars and chains while
         // building and executing a statement runner
         core: LocalSharedSpace,
-        tmp: Vec<Phrase>
+        tmp: Vec<Phrase>,
     }
-    
+
     impl StatementRunner {
         fn start() -> Self {
             StatementRunner {
                 core: LocalSharedSpace::new(),
-                tmp: Vec::new()
+                tmp: Vec::new(),
             }
         }
-    
+
         fn do_after(&mut self, p: Phrase) -> &Self {
             self.tmp.push(p);
             self
         }
-     
+
         fn name(&mut self, name: Vec<u8>, phrase: Phrase) -> &Self {
             let instruction_chain = gen_store_instruction(name, phrase);
             exec_function_chain(&mut self.core, Box::new(instruction_chain));
             self
         }
-    
+
         fn sname(&mut self, name_str: String, phrase: Phrase) -> &Self {
             let name = name_str.into_bytes();
             let instruction_chain = gen_store_instruction(name, phrase);
             exec_function_chain(&mut self.core, Box::new(instruction_chain));
             self
         }
-    
+
         fn compile(&mut self) -> &Self {
             // Create an empty list to hold the roots of the function tree
             let mut function_tree_roots: Vec<FunctionChain> = Vec::new();
-            
+
             // Process the phrases to build the function tree
             while !self.tmp.is_empty() {
-            // Take the next phrase from the remaining phrases
-            let current_phrase = self.tmp.remove(0);
-            let mut cur_res;
-            
+                // Take the next phrase from the remaining phrases
+                let current_phrase = self.tmp.remove(0);
+                let mut cur_res;
+
                 // Check if it's a Chain phrase
                 if let Phrase::Chain(function_chain) = current_phrase {
                     // Count the number of placeholders in the function chain
                     let num_placeholders = count_placeholders(&function_chain.to_bytes());
-                    
+
                     // Consume the next `num_placeholders` phrases from the remaining phrases
-                    let consumed_phrases: Vec<Phrase> = self.tmp.drain(..num_placeholders).collect();
-                    
+                    let consumed_phrases: Vec<Phrase> =
+                        self.tmp.drain(..num_placeholders).collect();
+
                     // Compile the consumed phrases into a new function chain
                     let compiled_phrases = compile_phrases(&mut self.core, consumed_phrases);
                     let mut fc_bytes = function_chain.to_bytes();
                     replace_placeholders(&mut fc_bytes, &compiled_phrases);
                     cur_res = merge_function_chains(FunctionChain::from_bytes(fc_bytes));
                 } else {
-                    let compiled = compile_phrases(&mut self.core, vec![current_phrase]).iter().flat_map(|bytes|FunctionChain::from_bytes(bytes.clone())).collect();
+                    let compiled = compile_phrases(&mut self.core, vec![current_phrase])
+                        .iter()
+                        .flat_map(|bytes| FunctionChain::from_bytes(bytes.clone()))
+                        .collect();
                     cur_res = merge_function_chains(compiled);
                 }
-                
+
                 // Add the current phrase's function chain to the list of roots
                 function_tree_roots.push(cur_res);
             }
-            
+
             // Merge the roots into a single function tree
             let final_function_tree = merge_function_chains(function_tree_roots);
-            
+
             let compiled_loc = vec![];
-            self.core.set(compiled_loc, final_function_tree.to_bytes()
-                .iter()
-                .map(|&byte| Arc::new(Atomic::new(byte)))
-                .collect()
+            self.core.set(
+                compiled_loc,
+                final_function_tree
+                    .to_bytes()
+                    .iter()
+                    .map(|&byte| Arc::new(Atomic::new(byte)))
+                    .collect(),
             );
             self
         }
-    
+
         fn run<S: SharedSpace + Clone>(&mut self, space: &mut S) -> Vec<u8> {
             if !self.tmp.is_empty() {
                 self.compile();
@@ -279,13 +289,17 @@ pub mod lang {
             let fc = merge_function_chains(iter.collect());
             exec_function_chain(space, Box::new(fc))
         }
-    
+
         fn execute<S: SharedSpace + Clone>(&mut self, space: &mut S) -> &Self {
             self.run(space);
             self
         }
-    
-        fn run_with_params<S: SharedSpace + Clone>(&mut self, params: Vec<Phrase>, space: &mut S) -> Vec<u8> {
+
+        fn run_with_params<S: SharedSpace + Clone>(
+            &mut self,
+            params: Vec<Phrase>,
+            space: &mut S,
+        ) -> Vec<u8> {
             if !self.tmp.is_empty() {
                 self.compile();
             }
@@ -299,12 +313,16 @@ pub mod lang {
             let fc = merge_function_chains(FunctionChain::from_bytes(bytes));
             exec_function_chain(space, Box::new(fc))
         }
-    
-        fn execute_with_params<S: SharedSpace + Clone>(&mut self, params: Vec<Phrase>, space: &mut S) -> &Self {
+
+        fn execute_with_params<S: SharedSpace + Clone>(
+            &mut self,
+            params: Vec<Phrase>,
+            space: &mut S,
+        ) -> &Self {
             self.run_with_params(params, space);
             self
         }
-    }    
+    }
 }
 
 mod _dims {
@@ -317,7 +335,7 @@ mod _dims {
         Four,
     }
 
-    pub fn bytes_to_point(bytes: Vec<u8>, bpd: BytesPerDim) -> Point {
+    pub fn bytes_to_point(bytes: &Vec<u8>, bpd: BytesPerDim) -> Point {
         match bpd {
             BytesPerDim::One => bytes.iter().map(|&byte| byte as i32).collect(),
             BytesPerDim::Two => bytes
@@ -584,7 +602,7 @@ pub enum FunctionChain {
     // execute children with a new context
     Isolate(Box<FunctionChain>),
     // execute children in a "foreign" context
-    ForeignContext(Box<FunctionChain>, Box<FunctionChain>)
+    ForeignContext(Box<FunctionChain>, Box<FunctionChain>),
 }
 
 pub fn follow_reference<S: SharedSpace + Clone>(
@@ -592,7 +610,7 @@ pub fn follow_reference<S: SharedSpace + Clone>(
     fc: Box<FunctionChain>,
     bpd: _dims::BytesPerDim,
 ) -> Vec<u8> {
-    let point = _dims::bytes_to_point(exec_function_chain(context, fc), bpd);
+    let point = _dims::bytes_to_point(&exec_function_chain(context, fc), bpd);
     FunctionChainLazyDeserializer::new(context.get(&point, None)).to_bytes()
 }
 
@@ -601,7 +619,7 @@ pub fn ref_as_code<S: SharedSpace + Clone>(
     fc: Box<FunctionChain>,
     bpd: _dims::BytesPerDim,
 ) -> Vec<FunctionChain> {
-    let point = _dims::bytes_to_point(exec_function_chain(context, fc), bpd);
+    let point = _dims::bytes_to_point(&exec_function_chain(context, fc), bpd);
     FunctionChainLazyDeserializer::new(context.get(&point, None)).collect()
 }
 
@@ -610,7 +628,7 @@ pub fn follow_byte_reference<S: SharedSpace + Clone>(
     bytes: Vec<u8>,
     bpd: _dims::BytesPerDim,
 ) -> Vec<u8> {
-    let point = _dims::bytes_to_point(bytes, bpd);
+    let point = _dims::bytes_to_point(&bytes, bpd);
     FunctionChainLazyDeserializer::new(context.get(&point, None)).to_bytes()
 }
 
@@ -619,17 +637,23 @@ pub fn byte_ref_as_code<S: SharedSpace + Clone>(
     bytes: Vec<u8>,
     bpd: _dims::BytesPerDim,
 ) -> Vec<FunctionChain> {
-    let point = _dims::bytes_to_point(bytes, bpd);
+    let point = _dims::bytes_to_point(&bytes, bpd);
     FunctionChainLazyDeserializer::new(context.get(&point, None)).collect()
 }
 
-pub fn exec_function_chains<S: SharedSpace + Clone>(context: &mut S, fcs: Vec<FunctionChain>) -> Vec<u8> {
+pub fn exec_function_chains<S: SharedSpace + Clone>(
+    context: &mut S,
+    fcs: Vec<FunctionChain>,
+) -> Vec<u8> {
     fcs.into_iter()
         .flat_map(|fc| exec_function_chain(context, Box::new(fc)))
         .collect()
 }
 
-pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<FunctionChain>) -> Vec<u8> {
+pub fn exec_function_chain<S: SharedSpace + Clone>(
+    context: &mut S,
+    fc: Box<FunctionChain>,
+) -> Vec<u8> {
     let maybe_dim: Cell<Option<_dims::BytesPerDim>> = Cell::new(None);
     match *fc {
         //set maybe_dim if neccesary using if guard expression side-effects!
@@ -694,7 +718,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         FunctionChain::Eq(child0, child1) => {
             let child_res0 = exec_function_chain(context, child0);
             let child_res1 = exec_function_chain(context, child1);
-            if child_res0 == child_res1 { vec![1] } else { vec![0] }
+            if child_res0 == child_res1 {
+                vec![1]
+            } else {
+                vec![0]
+            }
         }
         FunctionChain::Add(child0, child1) => {
             let child_res0 = exec_function_chain(context, child0);
@@ -1030,7 +1058,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         | FunctionChain::AddDown4(child0, child1) => {
             let child_res0 = exec_function_chain(context, child0);
             let mut point = _dims::bytes_to_point(
-                follow_reference(
+                &follow_reference(
                     context,
                     child1,
                     maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
@@ -1052,7 +1080,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         | FunctionChain::SubDown4(child0, child1) => {
             let child_res0 = exec_function_chain(context, child0);
             let mut point = _dims::bytes_to_point(
-                follow_reference(
+                &follow_reference(
                     context,
                     child1,
                     maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
@@ -1074,7 +1102,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         | FunctionChain::MulDown4(child0, child1) => {
             let child_res0 = exec_function_chain(context, child0);
             let mut point = _dims::bytes_to_point(
-                follow_reference(
+                &follow_reference(
                     context,
                     child1,
                     maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
@@ -1096,7 +1124,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         | FunctionChain::DivDown4(child0, child1) => {
             let child_res0 = exec_function_chain(context, child0);
             let mut point = _dims::bytes_to_point(
-                follow_reference(
+                &follow_reference(
                     context,
                     child1,
                     maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
@@ -1119,7 +1147,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             let child_res0 = exec_function_chain(context, child0);
             let child_res2 = exec_function_chain(context, child2);
             let mut point = _dims::bytes_to_point(
-                follow_reference(
+                &follow_reference(
                     context,
                     child1,
                     maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
@@ -1149,7 +1177,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             let child_res0 = exec_function_chain(context, child0);
             let child_res2 = exec_function_chain(context, child2);
             let mut point = _dims::bytes_to_point(
-                follow_reference(
+                &follow_reference(
                     context,
                     child1,
                     maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
@@ -1179,7 +1207,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             let child_res0 = exec_function_chain(context, child0);
             let child_res2 = exec_function_chain(context, child2);
             let mut point = _dims::bytes_to_point(
-                follow_reference(
+                &follow_reference(
                     context,
                     child1,
                     maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
@@ -1209,7 +1237,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             let child_res0 = exec_function_chain(context, child0);
             let child_res2 = exec_function_chain(context, child2);
             let mut point = _dims::bytes_to_point(
-                follow_reference(
+                &follow_reference(
                     context,
                     child1,
                     maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
@@ -1479,7 +1507,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         }
         FunctionChain::RunRelative(point_child, dim_num_child) => {
             let mut point_raw = _dims::bytes_to_point(
-                exec_function_chain(context, point_child),
+                &exec_function_chain(context, point_child),
                 _dims::BytesPerDim::Four,
             );
             let dim_num = BigUint::from_bytes_le(&exec_function_chain(context, dim_num_child));
@@ -1495,11 +1523,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         }
         FunctionChain::RunRegion(origin_child, dims_child) => {
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
             let region = LiveRegionView::new(context, origin, dims);
@@ -1513,11 +1541,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         }
         FunctionChain::SelectFromRegion(origin_child, dims_child, index_child) => {
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
             let view_space = context.clone();
@@ -1538,11 +1566,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         FunctionChain::RunPrefixedRegion(origin_child, dims_child, prefix_child) => {
             let prefix = exec_function_chain(context, prefix_child); // Clone the prefix function chain.
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
             let view_space = context.clone();
@@ -1560,11 +1588,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         FunctionChain::RunReferencePrefixedRegion(origin_child, dims_child, prefix_child) => {
             let prefix = *prefix_child; // Clone the prefix function chain.
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
 
@@ -1582,11 +1610,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         }
         FunctionChain::RunRegionDense(origin_child, dims_child) => {
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
             let region = LiveRegionView::new(context, origin, dims);
@@ -1600,11 +1628,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         }
         FunctionChain::SelectFromRegionDense(origin_child, dims_child, index_child) => {
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
 
@@ -1626,11 +1654,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         FunctionChain::RunPrefixedRegionDense(origin_child, dims_child, prefix_child) => {
             let prefix = exec_function_chain(context, prefix_child); // Clone the prefix function chain.
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
 
@@ -1649,11 +1677,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         FunctionChain::RunReferencePrefixedRegionDense(origin_child, dims_child, prefix_child) => {
             let prefix = *prefix_child; // Clone the prefix function chain.
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
 
@@ -1671,95 +1699,119 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         }
         FunctionChain::DropStartFrom(child_point, child_index) => {
             let point = _dims::bytes_to_point(
-                exec_function_chain(context, child_point),
+                &exec_function_chain(context, child_point),
                 _dims::BytesPerDim::Four,
             );
             let index = BigUint::from_bytes_le(&exec_function_chain(context, child_index));
 
-            context.mutate(&point, None, Box::new(|extant| {
-                let skip_amt = (extant.len() - index % extant.len()).to_usize().unwrap();
-                let new = extant.iter().skip(skip_amt).cloned().collect();
-                *extant = Arc::new(new);
-            }));
+            context.mutate(
+                &point,
+                None,
+                Box::new(|extant| {
+                    let skip_amt = (extant.len() - index % extant.len()).to_usize().unwrap();
+                    let new = extant.iter().skip(skip_amt).cloned().collect();
+                    *extant = Arc::new(new);
+                }),
+            );
             Vec::new()
         }
         FunctionChain::DropEndFrom(child_point, child_index) => {
             let point = _dims::bytes_to_point(
-                exec_function_chain(context, child_point),
+                &exec_function_chain(context, child_point),
                 _dims::BytesPerDim::Four,
             );
             let index = BigUint::from_bytes_le(&exec_function_chain(context, child_index));
 
-            context.mutate(&point, None, Box::new(|extant| {
-                let take_amt: usize = (extant.len() - index % extant.len()).to_usize().unwrap();
-                let new = extant.iter().take(take_amt).cloned().collect();
-                *extant = Arc::new(new);
-            }));
+            context.mutate(
+                &point,
+                None,
+                Box::new(|extant| {
+                    let take_amt: usize = (extant.len() - index % extant.len()).to_usize().unwrap();
+                    let new = extant.iter().take(take_amt).cloned().collect();
+                    *extant = Arc::new(new);
+                }),
+            );
             Vec::new()
         }
         FunctionChain::DropStartFromReference(child_point, child_index) => {
             let point = _dims::bytes_to_point(
-                follow_reference(context, child_point, _dims::BytesPerDim::Four),
+                &follow_reference(context, child_point, _dims::BytesPerDim::Four),
                 _dims::BytesPerDim::Four,
             );
             let index = BigUint::from_bytes_le(&exec_function_chain(context, child_index));
 
-            context.mutate(&point, None, Box::new(|extant| {
-                let skip_amt = (extant.len() - index % extant.len()).to_usize().unwrap();
-                let new = extant.iter().skip(skip_amt).cloned().collect();
-                *extant = Arc::new(new);
-            }));
+            context.mutate(
+                &point,
+                None,
+                Box::new(|extant| {
+                    let skip_amt = (extant.len() - index % extant.len()).to_usize().unwrap();
+                    let new = extant.iter().skip(skip_amt).cloned().collect();
+                    *extant = Arc::new(new);
+                }),
+            );
             Vec::new()
         }
         FunctionChain::DropEndFromReference(child_point, child_index) => {
             let point = _dims::bytes_to_point(
-                follow_reference(context, child_point, _dims::BytesPerDim::Four),
+                &follow_reference(context, child_point, _dims::BytesPerDim::Four),
                 _dims::BytesPerDim::Four,
             );
             let index = BigUint::from_bytes_le(&exec_function_chain(context, child_index))
                 .to_usize()
                 .unwrap();
 
-            context.mutate(&point, None, Box::new(move |extant| {
-                let take_amt: usize = (extant.len() - index % extant.len()).to_usize().unwrap();
-                let new = extant.iter().take(take_amt).cloned().collect();
-                *extant = Arc::new(new);
-            }));
+            context.mutate(
+                &point,
+                None,
+                Box::new(move |extant| {
+                    let take_amt: usize = (extant.len() - index % extant.len()).to_usize().unwrap();
+                    let new = extant.iter().take(take_amt).cloned().collect();
+                    *extant = Arc::new(new);
+                }),
+            );
             Vec::new()
         }
         FunctionChain::DropStartFromRunReference(child_point, child_index) => {
             let ref_as_chain = ref_as_code(context, child_point, _dims::BytesPerDim::Four);
             let point = _dims::bytes_to_point(
-                exec_function_chains(context, ref_as_chain),
+                &exec_function_chains(context, ref_as_chain),
                 _dims::BytesPerDim::Four,
             );
             let index = BigUint::from_bytes_le(&exec_function_chain(context, child_index));
 
-            context.mutate(&point, None, Box::new(|extant| {
-                let skip_amt = (extant.len() - index % extant.len()).to_usize().unwrap();
-                let new = extant.iter().skip(skip_amt).cloned().collect();
-                *extant = Arc::new(new);
-            }));
+            context.mutate(
+                &point,
+                None,
+                Box::new(|extant| {
+                    let skip_amt = (extant.len() - index % extant.len()).to_usize().unwrap();
+                    let new = extant.iter().skip(skip_amt).cloned().collect();
+                    *extant = Arc::new(new);
+                }),
+            );
             Vec::new()
         }
         FunctionChain::DropEndFromRunReference(child_point, child_index) => {
             let ref_as_chain = ref_as_code(context, child_point, _dims::BytesPerDim::Four);
             let point = _dims::bytes_to_point(
-                exec_function_chains(context, ref_as_chain),
+                &exec_function_chains(context, ref_as_chain),
                 _dims::BytesPerDim::Four,
             );
             let index = BigUint::from_bytes_le(&exec_function_chain(context, child_index));
 
-            context.mutate(&point, None, Box::new(|extant| {
-                let take_amt: usize = (extant.len() - index % extant.len()).to_usize().unwrap();
-                let new = extant.iter().take(take_amt).cloned().collect();
-                *extant = Arc::new(new);
-            }));
+            context.mutate(
+                &point,
+                None,
+                Box::new(|extant| {
+                    let take_amt: usize = (extant.len() - index % extant.len()).to_usize().unwrap();
+                    let new = extant.iter().take(take_amt).cloned().collect();
+                    *extant = Arc::new(new);
+                }),
+            );
             Vec::new()
         }
         FunctionChain::RangeFrom(child_point, child_start, child_end) => {
             let point = _dims::bytes_to_point(
-                exec_function_chain(context, child_point),
+                &exec_function_chain(context, child_point),
                 _dims::BytesPerDim::Four,
             );
             let start = BigUint::from_bytes_le(&exec_function_chain(context, child_start));
@@ -1768,15 +1820,19 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             let start: usize = (start % usize::MAX).to_usize().unwrap();
             let end: usize = (end % usize::MAX).to_usize().unwrap();
 
-            context.mutate(&point, Some(start..end), Box::new(|extant| {
-                let new = extant.iter().cloned().collect();
-                *extant = Arc::new(new);
-            }));
+            context.mutate(
+                &point,
+                Some(start..end),
+                Box::new(|extant| {
+                    let new = extant.iter().cloned().collect();
+                    *extant = Arc::new(new);
+                }),
+            );
             Vec::new()
         }
         FunctionChain::RangeFromReference(child_point, child_start, child_end) => {
             let point = _dims::bytes_to_point(
-                follow_reference(context, child_point, _dims::BytesPerDim::Four),
+                &follow_reference(context, child_point, _dims::BytesPerDim::Four),
                 _dims::BytesPerDim::Four,
             );
             let start = BigUint::from_bytes_le(&exec_function_chain(context, child_start));
@@ -1785,16 +1841,20 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             let start: usize = (start % usize::MAX).to_usize().unwrap();
             let end: usize = (end % usize::MAX).to_usize().unwrap();
 
-            context.mutate(&point, Some(start..end), Box::new(|extant| {
-                let new = extant.iter().cloned().collect();
-                *extant = Arc::new(new);
-            }));
+            context.mutate(
+                &point,
+                Some(start..end),
+                Box::new(|extant| {
+                    let new = extant.iter().cloned().collect();
+                    *extant = Arc::new(new);
+                }),
+            );
             Vec::new()
         }
         FunctionChain::RangeFromRunReference(child_point, child_start, child_end) => {
             let ref_as_chain = ref_as_code(context, child_point, _dims::BytesPerDim::Four);
             let point = _dims::bytes_to_point(
-                exec_function_chains(context, ref_as_chain),
+                &exec_function_chains(context, ref_as_chain),
                 _dims::BytesPerDim::Four,
             );
             let start = BigUint::from_bytes_le(&exec_function_chain(context, child_start));
@@ -1803,17 +1863,21 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             let start: usize = (start % usize::MAX).to_usize().unwrap();
             let end: usize = (end % usize::MAX).to_usize().unwrap();
 
-            context.mutate(&point, Some(start..end), Box::new(|extant| {
-                let new = extant.iter().cloned().collect();
-                *extant = Arc::new(new);
-            }));
+            context.mutate(
+                &point,
+                Some(start..end),
+                Box::new(|extant| {
+                    let new = extant.iter().cloned().collect();
+                    *extant = Arc::new(new);
+                }),
+            );
             Vec::new()
         }
         FunctionChain::DeletePoint(point_child)
         | FunctionChain::DeletePoint2(point_child)
         | FunctionChain::DeletePoint4(point_child) => {
             let point = _dims::bytes_to_point(
-                exec_function_chain(context, point_child),
+                &exec_function_chain(context, point_child),
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
             context.set(point, Vec::new());
@@ -1823,50 +1887,58 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         | FunctionChain::ZeroPoint2(point_child)
         | FunctionChain::ZeroPoint4(point_child) => {
             let point = _dims::bytes_to_point(
-                exec_function_chain(context, point_child),
+                &exec_function_chain(context, point_child),
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
-            context.mutate(&point, None, Box::new(move |extant| {
-                for element in extant.iter() {
-                    element.store(0, Ordering::Release);
-                }
-            }));
+            context.mutate(
+                &point,
+                None,
+                Box::new(move |extant| {
+                    for element in extant.iter() {
+                        element.store(0, Ordering::Release);
+                    }
+                }),
+            );
             Vec::new()
         }
         FunctionChain::WriteToPoint(point_child, write_child)
         | FunctionChain::WriteToPoint2(point_child, write_child)
         | FunctionChain::WriteToPoint4(point_child, write_child) => {
             let point = _dims::bytes_to_point(
-                exec_function_chain(context, point_child),
+                &exec_function_chain(context, point_child),
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
             let write = exec_function_chain(context, write_child);
             let res = write.clone();
-            context.mutate(&point, None, Box::new(move |extant| {
-                let mut idx: usize = 0;
-                let mut new = Vec::new();
-                for &to_write in write.iter() {
-                    if let Some(element) = extant.get(idx) {
-                        element.store(to_write, Ordering::Release);
-                        new.push(element.clone());
-                    } else {
-                        new.push(Arc::new(Atomic::new(to_write)));
+            context.mutate(
+                &point,
+                None,
+                Box::new(move |extant| {
+                    let mut idx: usize = 0;
+                    let mut new = Vec::new();
+                    for &to_write in write.iter() {
+                        if let Some(element) = extant.get(idx) {
+                            element.store(to_write, Ordering::Release);
+                            new.push(element.clone());
+                        } else {
+                            new.push(Arc::new(Atomic::new(to_write)));
+                        }
+                        idx += 1;
                     }
-                    idx += 1;
-                }
-                *extant = Arc::new(new);
-            }));
+                    *extant = Arc::new(new);
+                }),
+            );
             res
         }
         FunctionChain::DuplicatePointToPoint(point_child, target_child)
         | FunctionChain::DuplicatePointToPoint2(point_child, target_child)
         | FunctionChain::DuplicatePointToPoint4(point_child, target_child) => {
             let point = _dims::bytes_to_point(
-                exec_function_chain(context, point_child),
+                &exec_function_chain(context, point_child),
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
             let target = _dims::bytes_to_point(
-                exec_function_chain(context, target_child),
+                &exec_function_chain(context, target_child),
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
             context.duplicate_to(&point, target, None);
@@ -1876,11 +1948,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         | FunctionChain::LinkPointToPoint2(point_child, target_child)
         | FunctionChain::LinkPointToPoint4(point_child, target_child) => {
             let point = _dims::bytes_to_point(
-                exec_function_chain(context, point_child),
+                &exec_function_chain(context, point_child),
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
             let target = _dims::bytes_to_point(
-                exec_function_chain(context, target_child),
+                &exec_function_chain(context, target_child),
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
             context.link_to(&point, target, None);
@@ -1888,11 +1960,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         }
         FunctionChain::DeleteRegion(origin_child, dims_child) => {
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
             let view_space = context.clone();
@@ -1905,32 +1977,36 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
         }
         FunctionChain::ZeroRegion(origin_child, dims_child) => {
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
             let view_space = context.clone();
             let region = LiveRegionView::new(&view_space, origin, dims);
             let extant_points_iter = region.iter_extant();
             for (point, _) in extant_points_iter {
-                context.mutate(&point, None, Box::new(|extant| {
-                    for element in extant.iter() {
-                        element.store(0, Ordering::Release);
-                    }
-                }));
+                context.mutate(
+                    &point,
+                    None,
+                    Box::new(|extant| {
+                        for element in extant.iter() {
+                            element.store(0, Ordering::Release);
+                        }
+                    }),
+                );
             }
             Vec::new()
         }
         FunctionChain::WriteRegion(origin_child, dims_child, write_child) => {
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
             let write = exec_function_chain(context, write_child);
@@ -1939,22 +2015,25 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             let region = LiveRegionView::new(&view_space, origin, dims);
             let extant_points_iter = region.iter_extant();
             for (point, _) in extant_points_iter {
-
                 let copy_write = write.clone();
-                context.mutate(&point, None, Box::new(move |extant| {
-                    let mut idx: usize = 0;
-                    let mut new = Vec::new();
-                    for &to_write in copy_write.iter() {
-                        if let Some(element) = extant.get(idx) {
-                            element.store(to_write, Ordering::Release);
-                            new.push(element.clone());
-                        } else {
-                            new.push(Arc::new(Atomic::new(to_write)));
+                context.mutate(
+                    &point,
+                    None,
+                    Box::new(move |extant| {
+                        let mut idx: usize = 0;
+                        let mut new = Vec::new();
+                        for &to_write in copy_write.iter() {
+                            if let Some(element) = extant.get(idx) {
+                                element.store(to_write, Ordering::Release);
+                                new.push(element.clone());
+                            } else {
+                                new.push(Arc::new(Atomic::new(to_write)));
+                            }
+                            idx += 1;
                         }
-                        idx += 1;
-                    }
-                    *extant = Arc::new(new);
-                }));
+                        *extant = Arc::new(new);
+                    }),
+                );
             }
             res
         }
@@ -1966,19 +2045,19 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             n_child,
         ) => {
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
             let output_point = _dims::bytes_to_point(
-                exec_function_chain(context, output_point_child),
+                &exec_function_chain(context, output_point_child),
                 _dims::BytesPerDim::Four,
             );
             let output_range_ref_point = _dims::bytes_to_point(
-                exec_function_chain(context, output_range_ref_point_child),
+                &exec_function_chain(context, output_range_ref_point_child),
                 _dims::BytesPerDim::Four,
             );
             let n = BigUint::from_bytes_le(&exec_function_chain(context, n_child));
@@ -1988,14 +2067,14 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             let view_space = context.clone();
             let region = LiveRegionView::new(&view_space, origin.clone(), dims);
             let desparse = DesparsedRegionView::new(region, n_usize);
-            for (point, data) in desparse.map(|(point_offset, data)|{
+            for (point, data) in desparse.map(|(point_offset, data)| {
                 let mut base = output_point.clone();
                 for (idx, offset_dim) in point_offset.iter().enumerate() {
                     base[idx] += offset_dim;
                     max_dims[idx] = max_dims[idx].max(base[idx]);
                 }
                 (base, data)
-            }){
+            }) {
                 context.set(point, data.to_vec());
             }
             context.set(
@@ -2015,19 +2094,19 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             n_child,
         ) => {
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_child),
+                &exec_function_chain(context, origin_child),
                 _dims::BytesPerDim::Four,
             );
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_child),
+                &exec_function_chain(context, dims_child),
                 _dims::BytesPerDim::Four,
             );
             let output_point = _dims::bytes_to_point(
-                exec_function_chain(context, output_point_child),
+                &exec_function_chain(context, output_point_child),
                 _dims::BytesPerDim::Four,
             );
             let output_range_ref_point = _dims::bytes_to_point(
-                exec_function_chain(context, output_range_ref_point_child),
+                &exec_function_chain(context, output_range_ref_point_child),
                 _dims::BytesPerDim::Four,
             );
             let target_dim = BigUint::from_bytes_le(&exec_function_chain(context, n_child));
@@ -2037,7 +2116,9 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             let extant_points_iter = region.iter_extant();
 
             let folding_distance = i32::MAX / 4;
-            let folding_dimensions: usize = (target_dim.sub(origin.len()) % origin.len()).to_usize().unwrap();
+            let folding_dimensions: usize = (target_dim.sub(origin.len()) % origin.len())
+                .to_usize()
+                .unwrap();
 
             // Initialize max_dims with the dimensions of the output_point
             let mut max_dims = output_point.clone();
@@ -2077,52 +2158,115 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(context: &mut S, fc: Box<Func
             Vec::new()
         }
         FunctionChain::Similarity(origin_c, dims_c, origin_c2, dims_c2, dim_n_c) => {
+            let origin_raw = exec_function_chain(context, origin_c);
             let origin = _dims::bytes_to_point(
-                exec_function_chain(context, origin_c),
+                &origin_raw,
                 _dims::BytesPerDim::Four,
             );
+            let dims_raw = exec_function_chain(context, dims_c);
             let dims = _dims::bytes_to_point(
-                exec_function_chain(context, dims_c),
+                &dims_raw,
                 _dims::BytesPerDim::Four,
             );
+            let origin2_raw =  exec_function_chain(context, origin_c2);
             let origin2 = _dims::bytes_to_point(
-                exec_function_chain(context, origin_c2),
+                &origin2_raw,
                 _dims::BytesPerDim::Four,
             );
+            let dims2_raw = exec_function_chain(context, dims_c2);
             let dims2 = _dims::bytes_to_point(
-                exec_function_chain(context, dims_c2),
+                &dims2_raw,
                 _dims::BytesPerDim::Four,
             );
-            let target_dim = BigUint::from_bytes_le(&exec_function_chain(context, dim_n_c));
-            /*let score = BigUint::new();
-            let dest;
-            let dest_2;
-            let pre_dims;
-            let pre_dims_2;
-            let final_dest;
-            let final_dest_2;
-            let final_dims;
-            let final_dims_2;
-            // mutate space to target dimensionality
-            //   - if dims.len > N
-            //    - desparseToN
-            //   - foldToN
-            // label and link contiguous regions between spaces
-            //   - create iterator joining all points from both spaces
-            //    - create region number for point
-            //    - create map using fill algo to find all contiguous points
-            //    - iterate through region points,
-            //     - query region number of other space at that point
-            //     - (assign+fill if unavailable)
-            //    - map most common common region as corresponding
-            //    - increase score based on
-            //     - corresponding region overlap
-            //     - non-corresponding region overlap
-            //     - region non-overlap
-            //   - continue at next unregioned point.
-            // return total score
+            let target_dim_raw = exec_function_chain(context, dim_n_c);
+            let target_dim = BigUint::from_bytes_le(&target_dim_raw); 
+
+            let mut output_ref_point_1: Vec<u8> = vec![123, 123, 123, 123];
+            let mut output_point_1: Vec<u8> = vec![124, 0, 0, 0, 1];
+            if dims.len() >= (target_dim.clone() % usize::MAX).to_usize().unwrap() {
+                // desparseToN
+                exec_function_chain(context, Box::new(fc!(
+                    DesparseToN,
+                        (Pass, [origin_raw]),
+                        (Pass, [dims_raw]),
+                        (Pass, [output_point_1]), 
+                        (Pass, [output_ref_point_1]), 
+                        (Pass, [target_dim_raw])
+                )));
+
+            } else if dims.len() < (target_dim.clone() % usize::MAX).to_usize().unwrap() {
+                exec_function_chain(context, Box::new(fc!(
+                    FoldToN,
+                        (Pass, [origin_raw]),
+                        (Pass, [dims_raw]),
+                        (Pass, [output_point_1]), 
+                        (Pass, [output_ref_point_1]), 
+                        (Pass, [target_dim_raw])
+                )));
+            }
+            let output_correction_dims_1 = _dims::bytes_to_point(&exec_function_chain(context, Box::new(fc!(
+                Reference4, (Pass, [output_ref_point_1])
+            ))), _dims::BytesPerDim::Four);
+            let output_point_point_1 = _dims::bytes_to_point(&output_point_1, _dims::BytesPerDim::Four);
+
+            let mut output_ref_point_2: Vec<u8> = vec![124, 123, 123, 124];
+            let mut output_point_2: Vec<u8> = vec![125, 0, 0, 0, 2];
+            if dims.len() >= (target_dim.clone() % usize::MAX).to_usize().unwrap() {
+                // desparseToN
+                exec_function_chain(context, Box::new(fc!(
+                    DesparseToN,
+                        (Pass, [origin2_raw]),
+                        (Pass, [dims2_raw]),
+                        (Pass, [output_point_2]), 
+                        (Pass, [output_ref_point_2]), 
+                        (Pass, [target_dim_raw])
+                )));
+
+            } else if dims2.len() < (target_dim.clone() % usize::MAX).to_usize().unwrap() {
+                exec_function_chain(context, Box::new(fc!(
+                    FoldToN,
+                        (Pass, [origin2_raw]),
+                        (Pass, [dims2_raw]),
+                        (Pass, [output_point_2]), 
+                        (Pass, [output_ref_point_2]), 
+                        (Pass, [target_dim_raw])
+                )));
+            }
+            let output_correction_dims_2 = _dims::bytes_to_point(&exec_function_chain(context, Box::new(fc!(
+                Reference4, (Pass, [output_ref_point_2])
+            ))), _dims::BytesPerDim::Four);
+            let output_point_point_2 = _dims::bytes_to_point(&output_point_2, _dims::BytesPerDim::Four);
+
+            let compared = LiveRegionView::new(context, output_point_point_1, output_correction_dims_1);
+            let compared_with = LiveRegionView::new(context, output_point_point_2, output_correction_dims_2);
+            let fill_tool_1 = DesparsedRegionView::new(compared, 1);
+            let fill_tool_2 = DesparsedRegionView::new(compared_with, 1);
+
+            let score = BigUint::new(vec![0]);
+            let max_score = BigUint::new(vec![0]);
+
+            // (point) <=> (region), (region) => (size)
+            /*
+            let mut rcount = 0;
+            let mut ptor = HashMap::new();
+            let mut rtop = HashMap::new();
+            let mut rtos = HashMap::new();
             */
-            unimplemented!()
+
+            // compare regions to other regions that share points with them (in the compared space)
+            // generate a structure similarity based on largest overlaps between regions
+            // iterate over regions 
+
+            let score_bytes = score.to_bytes_le();
+            let max_score_bytes = max_score.to_bytes_le();
+
+            exec_function_chain(context, Box::new(fc!(
+                DivAsRatios,
+                    (Pass, [score_bytes]),
+                    (Pass, [max_score_bytes]),
+                    (Pass, [max_score_bytes]), 
+                    (Pass, [max_score_bytes])
+            )))
         }
         FunctionChain::Isolate(child) => {
             let mut new_context = LocalSharedSpace::new();
@@ -2143,10 +2287,7 @@ mod tests {
         let mut world = LocalSharedSpace::new();
         let res0 = exec_function_chain(&mut world, Box::new(fc!(One)));
         assert_eq!(res0, vec![1]);
-        let res1 = exec_function_chain(
-            &mut world,
-            Box::new(fc!(Add, One, One)),
-        );
+        let res1 = exec_function_chain(&mut world, Box::new(fc!(Add, One, One)));
         assert_eq!(res1, vec![2]);
     }
 

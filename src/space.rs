@@ -481,8 +481,10 @@ impl<'a, S: SharedSpace + Clone> DesparsedRegionView<'a, S> {
                 let mut neg_neighbor = point.clone();
                 pos_neighbor[i] += distance;
                 neg_neighbor[i] -= distance;
+                let pos_bound = self.inner.dims[i].max(self.inner.origin[i]);
+                let neg_bound = self.inner.dims[i].min(self.inner.origin[i]);
 
-                if search_status.0 && pos_neighbor[i] < self.inner.dims[i] {
+                if search_status.0 && pos_neighbor[i] <= pos_bound {
                     if let Some(_) = self.inner.space.inner_get(&pos_neighbor) {
                         neighbors.push((i, distance as i32, pos_neighbor));
                         search_status.0 = false;
@@ -491,7 +493,7 @@ impl<'a, S: SharedSpace + Clone> DesparsedRegionView<'a, S> {
                     search_status.0 = false;
                 }
 
-                if search_status.1 && neg_neighbor[i] >= 0 {
+                if search_status.1 && neg_neighbor[i] >= neg_bound {
                     if let Some(_) = self.inner.space.inner_get(&neg_neighbor) {
                         neighbors.push((i, -distance as i32, neg_neighbor));
                         search_status.1 = false;
