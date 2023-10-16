@@ -5,7 +5,7 @@ use lazydeseriter::LazyDeserializer;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_rational::Ratio;
-use num_traits::{ToPrimitive, Zero};
+use num_traits::{ToPrimitive, Zero, CheckedSub, CheckedDiv};
 use std::cell::Cell;
 use std::ops::{Add, Div, Mul, Sub};
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ macro_rules! fc {
         ))?
     };
     ([$boxed:tt]) => {
-        lang::merge_function_chains(FunctionChain::from_bytes($boxed.clone()))
+        FunctionChain::Raw{ bytes : $boxed.clone() }
     };
     ({$literal:tt}) => {
         $literal
@@ -203,32 +203,32 @@ pub mod lang {
     }
 
     impl StatementRunner {
-        fn start() -> Self {
+        pub fn start() -> Self {
             StatementRunner {
                 core: LocalSharedSpace::new(),
                 tmp: Vec::new(),
             }
         }
 
-        fn do_after(&mut self, p: Phrase) -> &Self {
+        pub fn do_after(&mut self, p: Phrase) -> &Self {
             self.tmp.push(p);
             self
         }
 
-        fn name(&mut self, name: Vec<u8>, phrase: Phrase) -> &Self {
+        pub fn name(&mut self, name: Vec<u8>, phrase: Phrase) -> &Self {
             let instruction_chain = gen_store_instruction(name, phrase);
             exec_function_chain(&mut self.core, Box::new(instruction_chain));
             self
         }
 
-        fn sname(&mut self, name_str: String, phrase: Phrase) -> &Self {
+        pub fn sname(&mut self, name_str: String, phrase: Phrase) -> &Self {
             let name = name_str.into_bytes();
             let instruction_chain = gen_store_instruction(name, phrase);
             exec_function_chain(&mut self.core, Box::new(instruction_chain));
             self
         }
 
-        fn compile(&mut self) -> &Self {
+        pub fn compile(&mut self) -> &Self {
             // Create an empty list to hold the roots of the function tree
             let mut function_tree_roots: Vec<FunctionChain> = Vec::new();
 
@@ -279,7 +279,7 @@ pub mod lang {
             self
         }
 
-        fn run<S: SharedSpace + Clone>(&mut self, space: &mut S) -> Vec<u8> {
+        pub fn run<S: SharedSpace + Clone>(&mut self, space: &mut S) -> Vec<u8> {
             if !self.tmp.is_empty() {
                 self.compile();
             }
@@ -290,12 +290,12 @@ pub mod lang {
             exec_function_chain(space, Box::new(fc))
         }
 
-        fn execute<S: SharedSpace + Clone>(&mut self, space: &mut S) -> &Self {
+        pub fn execute<S: SharedSpace + Clone>(&mut self, space: &mut S) -> &Self {
             self.run(space);
             self
         }
 
-        fn run_with_params<S: SharedSpace + Clone>(
+        pub fn run_with_params<S: SharedSpace + Clone>(
             &mut self,
             params: Vec<Phrase>,
             space: &mut S,
@@ -314,7 +314,7 @@ pub mod lang {
             exec_function_chain(space, Box::new(fc))
         }
 
-        fn execute_with_params<S: SharedSpace + Clone>(
+        pub fn execute_with_params<S: SharedSpace + Clone>(
             &mut self,
             params: Vec<Phrase>,
             space: &mut S,
@@ -603,6 +603,7 @@ pub enum FunctionChain {
     Isolate(Box<FunctionChain>),
     // execute children in a "foreign" context
     ForeignContext(Box<FunctionChain>, Box<FunctionChain>),
+    Raw{bytes: Vec<u8>},
 }
 
 pub fn follow_reference<S: SharedSpace + Clone>(
@@ -737,7 +738,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let child_res1 = exec_function_chain(context, child1);
             let val0 = BigUint::from_bytes_le(&child_res0);
             let val1 = BigUint::from_bytes_le(&child_res1);
-            let res = val0 - val1;
+            let res = val0.checked_sub(&val1).unwrap_or(BigUint::new(vec![0]));
             res.to_bytes_le()
         }
         FunctionChain::Mul(child0, child1) => {
@@ -920,10 +921,10 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 den1
             };
 
-            let ratio0 = Ratio::new(num0, den0);
+            let ratio0 = Ratio::new(num0, den0.clone());
             let ratio1 = Ratio::new(num1, den1);
 
-            let res = ratio0.div(ratio1).to_f64().unwrap_or(0f64);
+            let res = ratio0.checked_div(&ratio1).unwrap_or(Ratio::new(den0.clone(),den0)).to_f64().unwrap_or(1f64);
 
             res.to_le_bytes().into_iter().collect()
         }
@@ -1094,7 +1095,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 FunctionChainLazyDeserializer::new(context.get(&point, None)).to_bytes();
             let val0 = BigUint::from_bytes_le(&child_res0);
             let val1 = BigUint::from_bytes_le(&child_res1);
-            let res = val0 - val1;
+            let res = val0.checked_sub(&val1).unwrap_or(BigUint::new(vec![0]));
             res.to_bytes_le()
         }
         FunctionChain::MulDown(child0, child1)
@@ -1156,11 +1157,12 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             );
             let val2 = BigUint::from_bytes_le(&child_res2);
             let mut idx = val2.to_u32_digits().pop().unwrap_or(0u32) as usize;
-            let mut sel_dim = if point.len() <= idx {
+            let mut sel_dim = if point.len() < idx {
                 point.remove(idx)
             } else {
+                let ret = point.pop().unwrap_or(0i32);
                 idx = point.len();
-                point.pop().unwrap_or(0i32)
+                ret
             };
             sel_dim += 1;
             point.insert(idx, sel_dim);
@@ -1186,11 +1188,12 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             );
             let val2 = BigUint::from_bytes_le(&child_res2);
             let mut idx = val2.to_u32_digits().pop().unwrap_or(0u32) as usize;
-            let mut sel_dim = if point.len() <= idx {
+            let mut sel_dim = if point.len() < idx {
                 point.remove(idx)
             } else {
+                let ret = point.pop().unwrap_or(0i32);
                 idx = point.len();
-                point.pop().unwrap_or(0i32)
+                ret
             };
             sel_dim += 1;
             point.insert(idx, sel_dim);
@@ -1198,7 +1201,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 FunctionChainLazyDeserializer::new(context.get(&point, None)).to_bytes();
             let val0 = BigUint::from_bytes_le(&child_res0);
             let val1 = BigUint::from_bytes_le(&child_res1);
-            let res = val0 - val1;
+            let res = val0.checked_sub(&val1).unwrap_or(BigUint::new(vec![0]));
             res.to_bytes_le()
         }
         FunctionChain::MulDownN(child0, child1, child2)
@@ -1216,11 +1219,12 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             );
             let val2 = BigUint::from_bytes_le(&child_res2);
             let mut idx = val2.to_u32_digits().pop().unwrap_or(0u32) as usize;
-            let mut sel_dim = if point.len() <= idx {
+            let mut sel_dim = if point.len() < idx {
                 point.remove(idx)
             } else {
+                let ret = point.pop().unwrap_or(0i32);
                 idx = point.len();
-                point.pop().unwrap_or(0i32)
+                ret
             };
             sel_dim += 1;
             point.insert(idx, sel_dim);
@@ -1246,11 +1250,12 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             );
             let val2 = BigUint::from_bytes_le(&child_res2);
             let mut idx = val2.to_u32_digits().pop().unwrap_or(0u32) as usize;
-            let mut sel_dim = if point.len() <= idx {
+            let mut sel_dim = if point.len() < idx {
                 point.remove(idx)
             } else {
+                let ret = point.pop().unwrap_or(0i32);
                 idx = point.len();
-                point.pop().unwrap_or(0i32)
+                ret
             };
             sel_dim += 1;
             point.insert(idx, sel_dim);
@@ -2116,9 +2121,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let extant_points_iter = region.iter_extant();
 
             let folding_distance = i32::MAX / 4;
-            let folding_dimensions: usize = (target_dim.sub(origin.len()) % origin.len())
-                .to_usize()
-                .unwrap();
+            let folding_dimensions: usize = if origin.len() == 0 {
+                0 // Default value when origin.len() is zero
+            } else {
+                (target_dim.sub(origin.len()) % origin.len()).to_usize().unwrap()
+            };
 
             // Initialize max_dims with the dimensions of the output_point
             let mut max_dims = output_point.clone();
@@ -2254,8 +2261,13 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             */
 
             // compare regions to other regions that share points with them (in the compared space)
-            // generate a structure similarity based on largest overlaps between regions
-            // iterate over regions 
+            // add points to regions based on flood fill, iterate region num and create new region if 
+            // new point is not similar to current point, after all points are processed, we start
+            // score calc by:
+            // generating a structure similarity based on largest overlaps between regions (shape)
+            // sum of all largest overlaps for all regions is structural similarity score.
+            // for each overlapping region, calc content based on representative (first/random)
+            // value diff. 
 
             let score_bytes = score.to_bytes_le();
             let max_score_bytes = max_score.to_bytes_le();
@@ -2272,8 +2284,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let mut new_context = LocalSharedSpace::new();
             exec_function_chain(&mut new_context, child)
         }
+        FunctionChain::Raw { bytes } => {
+            bytes
+        }
         _ => {
-            unimplemented!()
+            vec![0]
         }
     }
 }
@@ -2303,5 +2318,19 @@ mod tests {
         let out: Vec<u8> = chain.iter().flat_map(|fc| fc.to_bytes()).collect();
         let chain2 = FunctionChain::from_bytes(out.clone());
         assert_eq!(chain, chain2);
+    }
+
+    #[test]
+    fn mega_random_test_should_always_pass() {
+        let mut world = LocalSharedSpace::new();
+        let test_origin = vec![1,1];
+        let test_range = vec![0,0];
+        let test_chain = fc!(
+            RunRegionDense,
+            (Pass, [test_origin]),
+            (Pass, [test_range])
+        );
+        println!("{:?}",test_chain);
+        let _res = exec_function_chain(&mut world, Box::new(test_chain));
     }
 }

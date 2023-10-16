@@ -11,6 +11,7 @@ pub fn lazy_deserializer_derive(input: TokenStream) -> TokenStream {
     let mut arms = Vec::new();
     let mut reverse_arms = Vec::new();
     let mut inner_arms = Vec::new();
+    let mut named_arms = Vec::new();
 
     if let Data::Enum(data_enum) = input.data {
         let first_variant_name = &data_enum.variants[0].ident;
@@ -65,7 +66,33 @@ pub fn lazy_deserializer_derive(input: TokenStream) -> TokenStream {
                         #name::#variant_name => vec![],
                     };
                 }
-                _ => unimplemented!("We do not yet support named Enum fields"),
+                Fields::Named(fields) => {
+                    if fields.named.len() > 1 {
+                        panic!("Enums with multiple named fields are not supported.");
+                    }
+                
+                    let field_name = fields.named.iter().next().unwrap().ident.as_ref().unwrap();
+                
+                    arm = quote! {
+                        #i => {
+                            let remaining_bytes: Vec<u8> = self.to_bytes()[self.index..].to_vec();
+                            self.index = self.inner_data.len();  // Advance index to the end
+                            #name::#variant_name { #field_name: remaining_bytes }
+                        },
+                    };
+                    reverse_arm = quote! {
+                        #name::#variant_name { #field_name: _ } => #i,
+                    };
+                    inner_arm = quote! {
+                        #name::#variant_name { #field_name: _ } => vec![],
+                    };
+                    named_arms.push(quote! {
+                        #name::#variant_name { #field_name: inner_field } => {
+                            res.extend(inner_field.clone());
+                            res.len()
+                        }
+                    });
+                }                                
             };
         
             if arms.len() < u8::MAX as usize {
@@ -87,16 +114,23 @@ pub fn lazy_deserializer_derive(input: TokenStream) -> TokenStream {
 
             impl #name {
                 pub fn len(&self) -> usize {
-                    let inner_chains = self.get_inner();
-                    if inner_chains.is_empty() {
-                        1
-                    } else {
-                        1 + inner_chains
-                            .into_iter()
-                            .map(|inner| inner.len())
-                            .sum::<usize>()
-                    }
-                }
+                    let mut res: Vec<u8> = Vec::new();
+                    let length: usize = match self {
+                        #(#named_arms)*
+                        _ => {
+                            let inner_chains = self.get_inner();
+                            if inner_chains.is_empty() {
+                                1
+                            } else {
+                                1 + inner_chains
+                                    .into_iter()
+                                    .map(|inner| inner.len())
+                                    .sum::<usize>()
+                            }
+                        }
+                    };
+                    length
+                }      
 
                 pub fn get_inner(&self) -> Vec<&#name> {
                     match self {
@@ -105,15 +139,25 @@ pub fn lazy_deserializer_derive(input: TokenStream) -> TokenStream {
                 }
 
                 pub fn to_bytes(&self) -> Vec<u8> {
-                    let mut res = Vec::new();
-                    res.push(match self {
+                    let mut res: Vec<u8> = Vec::new();
+                
+                    let initial_byte = match self {
                         #(#reverse_arms)*
-                    });
-                    let inner: Vec<u8> = self.get_inner()
-                        .iter()
-                        .flat_map(|inner_self|inner_self.to_bytes())
-                        .collect();
-                    res.extend(inner);
+                    };
+                
+                    res.push(initial_byte);
+                
+                    let _: usize = match self {
+                        #(#named_arms)*
+                        _ => {
+                            let inner: Vec<u8> = self.get_inner()
+                                .iter()
+                                .flat_map(|inner_self| inner_self.to_bytes())
+                                .collect();
+                            res.extend(inner);
+                            0
+                        }
+                    };
                     res
                 }
 
