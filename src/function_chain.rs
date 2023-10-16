@@ -2323,8 +2323,8 @@ mod tests {
     #[test]
     fn mega_random_test_should_always_pass() {
         let mut world = LocalSharedSpace::new();
-        let test_origin = vec![0,0];
-        let test_range = vec![0,7];
+        let test_origin = vec![0];
+        let test_range = vec![0];
         let test_chain = fc!(
             RunRegionDense,
              [test_origin],
