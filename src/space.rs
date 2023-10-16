@@ -90,7 +90,7 @@ pub trait SharedSpace {
                 let additional_values =
                     self.init_rand(point.clone(), vec.len()..requested_range.end);
                 let mut new_vec: Vec<AtomicU8Arc> = Vec::new();
-                new_vec.extend(vec.iter().map(|x| Arc::clone(x)));
+                new_vec.extend(vec.iter().map(Arc::clone));
                 new_vec.extend(
                     additional_values
                         .into_iter()
@@ -128,7 +128,7 @@ pub trait SharedSpace {
         if let Some(vec) = memoized_points.get(&point) {
             if vec.len() > range.end {
                 // If the end of the range is within the memoized values, return the requested sub-slice
-                let new_vec: Vec<u8> = vec[range.clone()]
+                let new_vec: Vec<u8> = vec[range]
                     .iter()
                     .map(|v| v.load(Ordering::Acquire))
                     .collect();
@@ -141,8 +141,8 @@ pub trait SharedSpace {
         let mut rng = self.seed_rng(&point);
         let mut memoized_points = MEMOIZED_POINTS.write().unwrap();
         let vec = memoized_points
-            .entry(point.clone())
-            .or_insert_with(|| Vec::new());
+            .entry(point)
+            .or_insert_with(Vec::new);
 
         for _ in vec.len()..range.end {
             let byte = Atomic::new(rng.gen::<u8>());
@@ -150,7 +150,7 @@ pub trait SharedSpace {
         }
 
         // Return the requested sub-slice of the RNG stream
-        let new_vec: Vec<u8> = vec[range.clone()]
+        let new_vec: Vec<u8> = vec[range]
             .iter()
             .map(|v| v.load(Ordering::Acquire))
             .collect();
@@ -485,8 +485,8 @@ impl<'a, S: SharedSpace + Clone> DesparsedRegionView<'a, S> {
                 let neg_bound = self.inner.dims[i].min(self.inner.origin[i]);
 
                 if search_status.0 && pos_neighbor[i] <= pos_bound {
-                    if let Some(_) = self.inner.space.inner_get(&pos_neighbor) {
-                        neighbors.push((i, distance as i32, pos_neighbor));
+                    if self.inner.space.inner_get(&pos_neighbor).is_some() {
+                        neighbors.push((i, distance, pos_neighbor));
                         search_status.0 = false;
                     }
                 } else {
@@ -494,8 +494,8 @@ impl<'a, S: SharedSpace + Clone> DesparsedRegionView<'a, S> {
                 }
 
                 if search_status.1 && neg_neighbor[i] >= neg_bound {
-                    if let Some(_) = self.inner.space.inner_get(&neg_neighbor) {
-                        neighbors.push((i, -distance as i32, neg_neighbor));
+                    if self.inner.space.inner_get(&neg_neighbor).is_some() {
+                        neighbors.push((i, -distance, neg_neighbor));
                         search_status.1 = false;
                     }
                 } else {

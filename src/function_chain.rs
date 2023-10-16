@@ -54,7 +54,7 @@ pub mod lang {
 
     fn name_to_point(name: Vec<u8>) -> Point {
         let mut result: Point = NAME_STORE.clone().to_vec();
-        let mut suffix: Point = name.clone().iter().map(|&a| a as i32).collect();
+        let mut suffix: Point = name.iter().map(|&a| a as i32).collect();
         result.append(&mut suffix);
         result
     }
@@ -71,7 +71,7 @@ pub mod lang {
     pub fn merge_function_chains(chains: Vec<FunctionChain>) -> FunctionChain {
         if chains.is_empty() {
             // Handle empty input appropriately; maybe return a FunctionChain::End or similar.
-            return fc!(End);
+            fc!(End)
         } else {
             chains.into_iter().reduce(
                 |acc, chain| fc!(ElseEager, { acc }, { chain }),
@@ -155,7 +155,7 @@ pub mod lang {
                 res
             }
             Phrase::Bytes(data) => {
-                stored_data = data.clone();
+                stored_data = data;
                 let mut res = BYTE_STORE.clone().to_vec();
                 let mut app = name_point.clone();
                 res.append(&mut app);
@@ -170,8 +170,8 @@ pub mod lang {
             }
             Phrase::Name(data) => {
                 stored_data = data.clone();
-                let res = name_to_point(data);
-                res
+                
+                name_to_point(data)
             }
         };
         let name_point_bytes = super::_dims::point_to_bytes(name_point);
@@ -189,10 +189,9 @@ pub mod lang {
         let name_chains = FunctionChain::from_bytes(name_chain_bytes);
         let data_chains = FunctionChain::from_bytes(data_chain_bytes);
 
-        let final_chain =
-            merge_function_chains([name_chains, data_chains].into_iter().flatten().collect());
+        
 
-        final_chain
+        merge_function_chains([name_chains, data_chains].into_iter().flatten().collect())
     }
 
     pub struct StatementRunner {
@@ -367,7 +366,7 @@ mod _dims {
             .iter()
             .flat_map(|&p| {
                 let bytes: [u8; 4] = p.to_le_bytes();
-                bytes.iter().copied().collect::<Vec<u8>>()
+                bytes.to_vec()
             })
             .collect()
     }
@@ -1267,7 +1266,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
         }
         FunctionChain::Else(child0, child1) => {
             let child_res0 = exec_function_chain(context, child0);
-            let all_zeros = child_res0.clone().iter().all(|&b| b == 0);
+            let all_zeros = child_res0.iter().all(|&b| b == 0);
             if child_res0 == vec![] || all_zeros {
                 exec_function_chain(context, child1)
             } else {
@@ -1277,7 +1276,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
         FunctionChain::ElseEager(child0, child1) => {
             let child_res0 = exec_function_chain(context, child0);
             let child_res1 = exec_function_chain(context, child1);
-            let all_zeros = child_res0.clone().iter().all(|&b| b == 0);
+            let all_zeros = child_res0.iter().all(|&b| b == 0);
             if child_res0 == vec![] || all_zeros {
                 child_res1
             } else {
@@ -1291,7 +1290,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 child1,
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
-            let all_zeros = child_res0.clone().iter().all(|&b| b == 0);
+            let all_zeros = child_res0.iter().all(|&b| b == 0);
             if child_res0 == vec![] || all_zeros {
                 child_res1
             } else {
@@ -1305,7 +1304,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 child1,
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
-            let all_zeros = child_res0.clone().iter().all(|&b| b == 0);
+            let all_zeros = child_res0.iter().all(|&b| b == 0);
             if child_res0 == vec![] || all_zeros {
                 child_res0
             } else {
@@ -1320,7 +1319,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
             );
             let eager_res1 = exec_function_chains(context, child_res1);
-            let all_zeros = child_res0.clone().iter().all(|&b| b == 0);
+            let all_zeros = child_res0.iter().all(|&b| b == 0);
             if child_res0 == vec![] || all_zeros {
                 child_res0
             } else {
@@ -1329,7 +1328,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
         }
         FunctionChain::IfElse(child0, child1, child2) => {
             let child_res0 = exec_function_chain(context, child0);
-            let all_zeros = child_res0.clone().iter().all(|&b| b == 0);
+            let all_zeros = child_res0.iter().all(|&b| b == 0);
             if child_res0 == vec![] || all_zeros {
                 exec_function_chain(context, child1)
             } else {
@@ -1340,7 +1339,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let child_res0 = exec_function_chain(context, child0);
             let nonzero_res = exec_function_chain(context, child1);
             let zero_res = exec_function_chain(context, child2);
-            let all_zeros = child_res0.clone().iter().all(|&b| b == 0);
+            let all_zeros = child_res0.iter().all(|&b| b == 0);
             if child_res0 == vec![] || all_zeros {
                 zero_res
             } else {
@@ -1349,7 +1348,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
         }
         FunctionChain::IfElseReference(child0, child1, child2) => {
             let child_res0 = exec_function_chain(context, child0);
-            let all_zeros = child_res0.clone().iter().all(|&b| b == 0);
+            let all_zeros = child_res0.iter().all(|&b| b == 0);
             if child_res0 == vec![] || all_zeros {
                 follow_reference(
                     context,
@@ -1366,7 +1365,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
         }
         FunctionChain::IfElseEagerRunReference(child0, child1, child2) => {
             let child_res0 = exec_function_chain(context, child0);
-            let all_zeros = child_res0.clone().iter().all(|&b| b == 0);
+            let all_zeros = child_res0.iter().all(|&b| b == 0);
             let child_res1 = ref_as_code(
                 context,
                 child1,
@@ -2063,7 +2062,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let mut max_dims = output_point.clone();
 
             let view_space = context.clone();
-            let region = LiveRegionView::new(&view_space, origin.clone(), dims);
+            let region = LiveRegionView::new(&view_space, origin, dims);
             let desparse = DesparsedRegionView::new(region, n_usize);
             for (point, data) in desparse.map(|(point_offset, data)| {
                 let mut base = output_point.clone();
@@ -2228,7 +2227,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                         (Pass, [target_dim_raw])
                 )));
 
-            } else if dims2.len() < (target_dim.clone() % usize::MAX).to_usize().unwrap() {
+            } else if dims2.len() < (target_dim % usize::MAX).to_usize().unwrap() {
                 exec_function_chain(context, Box::new(fc!(
                     FoldToN,
                         (Pass, [origin2_raw]),
@@ -2312,12 +2311,12 @@ mod tests {
         let inp: Vec<u8> = vec![
             2, 99, 2, 2, 5, 1, 0, 7, 1, 2, 1, 1, 1, 1, 23, 32, 142, 254, 0,
         ];
-        let chain = FunctionChain::from_bytes(inp.clone());
+        let chain = FunctionChain::from_bytes(inp);
         // out does not neccesarily match in - we should not expect it to, because
         // we may have multiple bytes that represent the same enum variants
         // but chain2 should always match chain.
         let out: Vec<u8> = chain.iter().flat_map(|fc| fc.to_bytes()).collect();
-        let chain2 = FunctionChain::from_bytes(out.clone());
+        let chain2 = FunctionChain::from_bytes(out);
         assert_eq!(chain, chain2);
     }
 
