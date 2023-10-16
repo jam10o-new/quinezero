@@ -7,8 +7,9 @@ use num_integer::Integer;
 use num_rational::Ratio;
 use num_traits::{ToPrimitive, Zero, CheckedSub, CheckedDiv};
 use std::cell::Cell;
-use std::ops::{Add, Div, Mul, Sub};
-use std::collections::HashMap;
+use std::ops::{Add, Mul, Sub};
+use debug_print::{debug_println as dprintln};
+
 
 
 macro_rules! fc {
@@ -43,7 +44,6 @@ pub mod lang {
     }
 
     const SILLY_NUMBER: i32 = -1;
-    const TEMP_NUMBER: i32 = -2;
     const CHAIN_STORE: [i32; 8] = [0, 0, 0, 0, 0, SILLY_NUMBER, 0, 0];
     const BYTE_STORE: [i32; 8] = [0, 0, 0, 0, 0, SILLY_NUMBER, 0, 1];
     const POINT_STORE: [i32; 8] = [0, 0, 0, 0, 0, SILLY_NUMBER, 0, 2];
@@ -145,7 +145,7 @@ pub mod lang {
 
     fn gen_store_instruction(name: Vec<u8>, phrase: Phrase) -> FunctionChain {
         let name_point = name_to_point(name);
-        let mut stored_data;
+        let stored_data;
         let data_point = match phrase {
             Phrase::Chain(data) => {
                 stored_data = data.to_bytes();
@@ -236,7 +236,7 @@ pub mod lang {
             while !self.tmp.is_empty() {
                 // Take the next phrase from the remaining phrases
                 let current_phrase = self.tmp.remove(0);
-                let mut cur_res;
+                let cur_res;
 
                 // Check if it's a Chain phrase
                 if let Phrase::Chain(function_chain) = current_phrase {
@@ -373,9 +373,7 @@ mod _dims {
     }
 }
 
-pub mod similarity {}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, LazyDeserializer, Clone)]
+#[derive(Debug, PartialEq, PartialOrd, Eq, LazyDeserializer, Clone)]
 pub enum FunctionChain {
     // Units
     End, // also 0
@@ -655,8 +653,9 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
     context: &mut S,
     fc: Box<FunctionChain>,
 ) -> Vec<u8> {
+    dprintln!("Start: {:?}",fc);
     let maybe_dim: Cell<Option<_dims::BytesPerDim>> = Cell::new(None);
-    match *fc {
+    let res = match *fc {
         //set maybe_dim if neccesary using if guard expression side-effects!
         // intentionally unreachable.
         //Two
@@ -1352,19 +1351,17 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let child_res0 = exec_function_chain(context, child0);
             let all_zeros = child_res0.clone().iter().all(|&b| b == 0);
             if child_res0 == vec![] || all_zeros {
-                let child_res2 = follow_reference(
+                follow_reference(
                     context,
                     child2,
                     maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
-                );
-                child_res2
+                )
             } else {
-                let child_res1 = follow_reference(
+                follow_reference(
                     context,
                     child1,
                     maybe_dim.get().unwrap_or(_dims::BytesPerDim::One),
-                );
-                child_res1
+                )
             }
         }
         FunctionChain::IfElseEagerRunReference(child0, child1, child2) => {
@@ -1521,7 +1518,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 .mod_floor(&dims.try_into().unwrap())
                 .try_into()
                 .unwrap();
-            point_raw[select_dim] = point_raw[select_dim] + 1;
+            point_raw[select_dim] += 1;
             FunctionChainLazyDeserializer::new(context.get(&point_raw, None))
                 .flat_map(|fc| exec_function_chain(context, Box::new(fc)))
                 .collect()
@@ -1919,16 +1916,14 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 &point,
                 None,
                 Box::new(move |extant| {
-                    let mut idx: usize = 0;
                     let mut new = Vec::new();
-                    for &to_write in write.iter() {
+                    for (idx, &to_write) in write.iter().enumerate() {
                         if let Some(element) = extant.get(idx) {
                             element.store(to_write, Ordering::Release);
                             new.push(element.clone());
                         } else {
                             new.push(Arc::new(Atomic::new(to_write)));
                         }
-                        idx += 1;
                     }
                     *extant = Arc::new(new);
                 }),
@@ -2025,16 +2020,14 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                     &point,
                     None,
                     Box::new(move |extant| {
-                        let mut idx: usize = 0;
                         let mut new = Vec::new();
-                        for &to_write in copy_write.iter() {
+                        for (idx, &to_write) in copy_write.iter().enumerate() {
                             if let Some(element) = extant.get(idx) {
                                 element.store(to_write, Ordering::Release);
                                 new.push(element.clone());
                             } else {
                                 new.push(Arc::new(Atomic::new(to_write)));
                             }
-                            idx += 1;
                         }
                         *extant = Arc::new(new);
                     }),
@@ -2075,8 +2068,14 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             for (point, data) in desparse.map(|(point_offset, data)| {
                 let mut base = output_point.clone();
                 for (idx, offset_dim) in point_offset.iter().enumerate() {
-                    base[idx] += offset_dim;
-                    max_dims[idx] = max_dims[idx].max(base[idx]);
+                    if idx == base.len() {
+                        let val = *offset_dim;
+                        base.push(val);
+                        max_dims.push(val);
+                    } else {
+                        base[idx] += offset_dim;
+                        max_dims[idx] = max_dims[idx].max(base[idx]);
+                    }
                 }
                 (base, data)
             }) {
@@ -2121,7 +2120,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let extant_points_iter = region.iter_extant();
 
             let folding_distance = i32::MAX / 4;
-            let folding_dimensions: usize = if origin.len() == 0 {
+            let folding_dimensions: usize = if origin.is_empty() {
                 0 // Default value when origin.len() is zero
             } else {
                 (target_dim.sub(origin.len()) % origin.len()).to_usize().unwrap()
@@ -2166,7 +2165,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
         }
         FunctionChain::Similarity(origin_c, dims_c, origin_c2, dims_c2, dim_n_c) => {
             let origin_raw = exec_function_chain(context, origin_c);
-            let origin = _dims::bytes_to_point(
+            let _origin = _dims::bytes_to_point(
                 &origin_raw,
                 _dims::BytesPerDim::Four,
             );
@@ -2176,7 +2175,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 _dims::BytesPerDim::Four,
             );
             let origin2_raw =  exec_function_chain(context, origin_c2);
-            let origin2 = _dims::bytes_to_point(
+            let _origin2 = _dims::bytes_to_point(
                 &origin2_raw,
                 _dims::BytesPerDim::Four,
             );
@@ -2188,8 +2187,8 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let target_dim_raw = exec_function_chain(context, dim_n_c);
             let target_dim = BigUint::from_bytes_le(&target_dim_raw); 
 
-            let mut output_ref_point_1: Vec<u8> = vec![123, 123, 123, 123];
-            let mut output_point_1: Vec<u8> = vec![124, 0, 0, 0, 1];
+            let output_ref_point_1: Vec<u8> = vec![123, 123, 123, 123];
+            let output_point_1: Vec<u8> = vec![124, 0, 0, 0, 1];
             if dims.len() >= (target_dim.clone() % usize::MAX).to_usize().unwrap() {
                 // desparseToN
                 exec_function_chain(context, Box::new(fc!(
@@ -2216,8 +2215,8 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             ))), _dims::BytesPerDim::Four);
             let output_point_point_1 = _dims::bytes_to_point(&output_point_1, _dims::BytesPerDim::Four);
 
-            let mut output_ref_point_2: Vec<u8> = vec![124, 123, 123, 124];
-            let mut output_point_2: Vec<u8> = vec![125, 0, 0, 0, 2];
+            let output_ref_point_2: Vec<u8> = vec![124, 123, 123, 124];
+            let output_point_2: Vec<u8> = vec![125, 0, 0, 0, 2];
             if dims.len() >= (target_dim.clone() % usize::MAX).to_usize().unwrap() {
                 // desparseToN
                 exec_function_chain(context, Box::new(fc!(
@@ -2246,8 +2245,8 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
 
             let compared = LiveRegionView::new(context, output_point_point_1, output_correction_dims_1);
             let compared_with = LiveRegionView::new(context, output_point_point_2, output_correction_dims_2);
-            let fill_tool_1 = DesparsedRegionView::new(compared, 1);
-            let fill_tool_2 = DesparsedRegionView::new(compared_with, 1);
+            let _fill_tool_1 = DesparsedRegionView::new(compared, 1);
+            let _fill_tool_2 = DesparsedRegionView::new(compared_with, 1);
 
             let score = BigUint::new(vec![0]);
             let max_score = BigUint::new(vec![0]);
@@ -2290,7 +2289,9 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
         _ => {
             vec![0]
         }
-    }
+    };
+    dprintln!("End");
+    res
 }
 
 #[cfg(test)]
@@ -2323,14 +2324,14 @@ mod tests {
     #[test]
     fn mega_random_test_should_always_pass() {
         let mut world = LocalSharedSpace::new();
-        let test_origin = vec![1,1];
-        let test_range = vec![0,0];
+        let test_origin = vec![0,0];
+        let test_range = vec![0,7];
         let test_chain = fc!(
             RunRegionDense,
-            (Pass, [test_origin]),
-            (Pass, [test_range])
+             [test_origin],
+             [test_range]
         );
-        println!("{:?}",test_chain);
+        dprintln!("{:?}",test_chain);
         let _res = exec_function_chain(&mut world, Box::new(test_chain));
     }
 }

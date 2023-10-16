@@ -170,6 +170,8 @@ pub fn lazy_deserializer_derive(input: TokenStream) -> TokenStream {
                 }
             }
 
+
+            #[allow(clippy::derive_ord_xor_partial_ord)]
             impl Ord for #name {
                 fn cmp(&self, other: &Self) -> std::cmp::Ordering {
                     self.len().cmp(&other.len())

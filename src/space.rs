@@ -526,7 +526,7 @@ impl<'a, S: SharedSpace + Clone> DesparsedRegionView<'a, S> {
                 if let Some(unvisited_point) = self
                     .points_map
                     .keys()
-                    .find(|k| !self.visited.contains(k.clone()))
+                    .find(|k| !self.visited.contains(<&Vec<i32>>::clone(k)))
                 {
                     self.stack.push(unvisited_point.clone());
                 }

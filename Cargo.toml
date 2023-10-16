@@ -12,16 +12,17 @@ getrandom = { version = "0.2.8", features = ["js"] }
 warp = "0.3.3"
 prokio = "0.1.0"
 tokio = { version = "1.26.0", features = ["full"] }
-wgpu = "0.15.1"
+wgpu = "0.17.1"
 futures = "0.3.27"
-atomic = "0.5"
+atomic = "0.6.0"
 lazy_static = "1.4.0"
 lazydeseriter = {version = "*", path = "./lazydeseriter"}
 num-bigint = "0.4.3"
 num-integer = "0.1.45"
 num-rational = "0.4.1"
 num-traits = "0.2.15"
-itertools = "0.10.5"
+itertools = "0.11.0"
+debug_print = "1.0.0"
 
 [dependencies.web-sys]
 version = "0.3.61"
