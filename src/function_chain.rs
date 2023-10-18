@@ -2352,9 +2352,10 @@ mod tests {
     #[test]
     fn fuzz() {
         let mut world = LocalSharedSpace::new();
-        let test_origin = vec![200, 21, 99, 0, 5, 33, 43];
+        let test_origin = vec![199, 21, 99, 0, 5, 33, 43];
         let test_range = vec![57];
         let test_chain = fc!(RunRegionDense, [test_origin], [test_range]);
         let _res = exec_function_chain(&mut world, Box::new(test_chain));
+        dprintln!("{:?}",world.inner);
     }
 }

@@ -208,7 +208,7 @@ impl ForeignInterface for BasicForeignInterface {
 
 #[derive(Clone)]
 pub struct LocalSharedSpace {
-    inner: HashMap<Point, Arc<Vec<AtomicU8Arc>>>,
+    pub inner: HashMap<Point, Arc<Vec<AtomicU8Arc>>>,
     foreign: Option<Arc<dyn ForeignInterface>>,
 }
 
