@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::RwLock;
 
-use debug_print::{debug_println as dprintln};
+
 
 pub mod prelude {
     pub use atomic::Atomic;
@@ -564,8 +564,8 @@ impl<'a, S: SharedSpace + Clone> Iterator for DesparsedRegionView<'a, S> {
     type Item = (Point, Arc<Vec<AtomicU8Arc>>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let out = self.next_desparse();
-        out
+        
+        self.next_desparse()
     }
 }
 

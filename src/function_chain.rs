@@ -1,6 +1,6 @@
 use crate::space::prelude::*;
 use crate::space::{DesparsedRegionView, LiveRegionView, LocalSharedSpace, SharedSpace};
-use debug_print::debug_println as dprintln;
+
 use itertools::Itertools;
 use lazydeseriter::LazyDeserializer;
 use num_bigint::{BigInt, BigUint};
@@ -651,8 +651,8 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
     fc: Box<FunctionChain>,
 ) -> Vec<u8> {
     let maybe_dim: Cell<Option<_dims::BytesPerDim>> = Cell::new(None);
-    let next: Vec<FunctionChain> = Vec::new();
-    let res = match *fc.clone() {
+    let _next: Vec<FunctionChain> = Vec::new();
+    let res = match *fc {
         //set maybe_dim if neccesary using if guard expression side-effects!
         // intentionally unreachable.
         //Two
@@ -2072,11 +2072,10 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 _dims::BytesPerDim::Four,
             );
             let n = BigUint::from_bytes_le(&exec_function_chain(context, n_child));
-            let n_usize;
-            if dims.is_empty() {
-                n_usize = 1;
+            let n_usize = if dims.is_empty() {
+                1
             } else {
-                n_usize = (n % dims.len()).to_usize().unwrap();
+                (n % dims.len()).to_usize().unwrap()
             }
 
             let mut max_dims = output_point.clone();
