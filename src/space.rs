@@ -8,6 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::RwLock;
 
+use debug_print::{debug_println as dprintln};
+
 pub mod prelude {
     pub use atomic::Atomic;
     pub use std::sync::atomic::Ordering;
@@ -357,20 +359,24 @@ impl Iterator for RegionPoints {
 
     fn next(&mut self) -> Option<Self::Item> {
         let p = self.cur.clone();
-
+    
         for i in (0..self.cur.len()).rev() {
             if self.cur[i] < self.dims[i] - 1 {
                 self.cur[i] += 1;
-                break;
-            } else if i == 0 {
-                return None; // All points have been generated.
-            } else {
-                self.cur[i] = 0;
+                for j in (i + 1)..self.cur.len() {
+                    self.cur[j] = 0;
+                }
+                return Some(p);
             }
         }
-
-        Some(p)
+        if self.cur.iter().all(|&x| x == 0) && !p.is_empty() {
+            self.cur[p.len() - 1] = 1;
+            return Some(p);
+        }
+        
+        None
     }
+     
 }
 
 fn generate_points_in_region(dims: Point) -> RegionPoints {
@@ -474,7 +480,7 @@ impl<'a, S: SharedSpace + Clone> DesparsedRegionView<'a, S> {
         for i in 0..self.dims {
             let mut distance = 1;
             let mut search_status = (true, true); // Track search status in both directions (pos, neg).
-
+            
             while search_status.0 || search_status.1 {
                 // Continue if either direction is still being searched.
                 let mut pos_neighbor = point.clone();
@@ -520,7 +526,6 @@ impl<'a, S: SharedSpace + Clone> DesparsedRegionView<'a, S> {
                 .insert(starting_point.clone(), vec![0; starting_point.len()]);
             self.stack.push(starting_point);
         }
-
         while !self.stack.is_empty() || self.visited.len() < self.points_map.len() {
             if self.stack.is_empty() {
                 if let Some(unvisited_point) = self
@@ -533,6 +538,7 @@ impl<'a, S: SharedSpace + Clone> DesparsedRegionView<'a, S> {
             }
 
             if let Some(point) = self.stack.pop() {
+
                 if !self.visited.contains(&point) {
                     self.visited.insert(point.clone());
                     if let Some(neighbors) = self.points_map.get(&point) {
@@ -558,7 +564,8 @@ impl<'a, S: SharedSpace + Clone> Iterator for DesparsedRegionView<'a, S> {
     type Item = (Point, Arc<Vec<AtomicU8Arc>>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_desparse()
+        let out = self.next_desparse();
+        out
     }
 }
 

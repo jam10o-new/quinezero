@@ -1,16 +1,14 @@
 use crate::space::prelude::*;
 use crate::space::{DesparsedRegionView, LiveRegionView, LocalSharedSpace, SharedSpace};
+use debug_print::debug_println as dprintln;
 use itertools::Itertools;
 use lazydeseriter::LazyDeserializer;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_rational::Ratio;
-use num_traits::{ToPrimitive, Zero, CheckedSub, CheckedDiv};
+use num_traits::{CheckedDiv, CheckedSub, ToPrimitive, Zero};
 use std::cell::Cell;
 use std::ops::{Add, Mul, Sub};
-use debug_print::{debug_println as dprintln};
-
-
 
 macro_rules! fc {
     ($variant:ident $(, $( $child:tt ),* )? ) => {
@@ -73,11 +71,11 @@ pub mod lang {
             // Handle empty input appropriately; maybe return a FunctionChain::End or similar.
             fc!(End)
         } else {
-            chains.into_iter().reduce(
-                |acc, chain| fc!(ElseEager, { acc }, { chain }),
-            ).unwrap()
+            chains
+                .into_iter()
+                .reduce(|acc, chain| fc!(ElseEager, { acc }, { chain }))
+                .unwrap()
         }
-        
     }
 
     fn count_placeholders(target: &Vec<u8>) -> usize {
@@ -170,7 +168,7 @@ pub mod lang {
             }
             Phrase::Name(data) => {
                 stored_data = data.clone();
-                
+
                 name_to_point(data)
             }
         };
@@ -188,8 +186,6 @@ pub mod lang {
 
         let name_chains = FunctionChain::from_bytes(name_chain_bytes);
         let data_chains = FunctionChain::from_bytes(data_chain_bytes);
-
-        
 
         merge_function_chains([name_chains, data_chains].into_iter().flatten().collect())
     }
@@ -600,7 +596,9 @@ pub enum FunctionChain {
     Isolate(Box<FunctionChain>),
     // execute children in a "foreign" context
     ForeignContext(Box<FunctionChain>, Box<FunctionChain>),
-    Raw{bytes: Vec<u8>},
+    Raw {
+        bytes: Vec<u8>,
+    },
 }
 
 pub fn follow_reference<S: SharedSpace + Clone>(
@@ -652,9 +650,9 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
     context: &mut S,
     fc: Box<FunctionChain>,
 ) -> Vec<u8> {
-    dprintln!("Start: {:?}",fc);
     let maybe_dim: Cell<Option<_dims::BytesPerDim>> = Cell::new(None);
-    let res = match *fc {
+    let next: Vec<FunctionChain> = Vec::new();
+    let res = match *fc.clone() {
         //set maybe_dim if neccesary using if guard expression side-effects!
         // intentionally unreachable.
         //Two
@@ -736,7 +734,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let child_res1 = exec_function_chain(context, child1);
             let val0 = BigUint::from_bytes_le(&child_res0);
             let val1 = BigUint::from_bytes_le(&child_res1);
-            let res = val0.checked_sub(&val1).unwrap_or(BigUint::new(vec![0]));
+            let res = val0.checked_sub(&val1).unwrap_or(BigUint::new(vec![]));
             res.to_bytes_le()
         }
         FunctionChain::Mul(child0, child1) => {
@@ -752,7 +750,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let child_res1 = exec_function_chain(context, child1);
             let val0 = BigUint::from_bytes_le(&child_res0);
             let val1 = BigUint::from_bytes_le(&child_res1);
-            let res = val0 / val1;
+            let res = val0.checked_div(&val1).unwrap_or(BigUint::new(vec![]));
             res.to_bytes_le()
         }
         FunctionChain::Cat(child0, child1) => {
@@ -922,7 +920,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let ratio0 = Ratio::new(num0, den0.clone());
             let ratio1 = Ratio::new(num1, den1);
 
-            let res = ratio0.checked_div(&ratio1).unwrap_or(Ratio::new(den0.clone(),den0)).to_f64().unwrap_or(1f64);
+            let res = ratio0
+                .checked_div(&ratio1)
+                .unwrap_or(Ratio::new(den0.clone(), den0))
+                .to_f64()
+                .unwrap_or(1f64);
 
             res.to_le_bytes().into_iter().collect()
         }
@@ -1513,14 +1515,18 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             );
             let dim_num = BigUint::from_bytes_le(&exec_function_chain(context, dim_num_child));
             let dims = point_raw.len();
-            let select_dim: usize = dim_num
-                .mod_floor(&dims.try_into().unwrap())
-                .try_into()
-                .unwrap();
-            point_raw[select_dim] += 1;
-            FunctionChainLazyDeserializer::new(context.get(&point_raw, None))
-                .flat_map(|fc| exec_function_chain(context, Box::new(fc)))
-                .collect()
+            if dims > 0 {
+                let select_dim: usize = dim_num
+                    .mod_floor(&dims.try_into().unwrap())
+                    .try_into()
+                    .unwrap();
+                point_raw[select_dim] += 1;
+                FunctionChainLazyDeserializer::new(context.get(&point_raw, None))
+                    .flat_map(|fc| exec_function_chain(context, Box::new(fc)))
+                    .collect()
+            } else {
+                vec![]
+            }
         }
         FunctionChain::RunRegion(origin_child, dims_child) => {
             let origin = _dims::bytes_to_point(
@@ -1554,15 +1560,19 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let index = BigUint::from_bytes_le(&exec_function_chain(context, index_child));
             type RegionPoint = (Point, Arc<Vec<AtomicU8Arc>>);
             let points: Vec<RegionPoint> = region.iter_extant().collect();
-            let wrapped_index: usize = index
-                .mod_floor(&(points.len().try_into().unwrap()))
-                .try_into()
-                .unwrap();
-            let selected_point: &RegionPoint = points.get(wrapped_index).unwrap();
+            if points.is_empty() {
+                vec![]
+            } else {
+                let wrapped_index: usize = index
+                    .mod_floor(&(points.len().try_into().unwrap()))
+                    .try_into()
+                    .unwrap();
+                let selected_point: &RegionPoint = points.get(wrapped_index).unwrap();
 
-            FunctionChainLazyDeserializer::new(Arc::clone(&selected_point.1))
-                .flat_map(|fc| exec_function_chain(context, Box::new(fc)))
-                .collect()
+                FunctionChainLazyDeserializer::new(Arc::clone(&selected_point.1))
+                    .flat_map(|fc| exec_function_chain(context, Box::new(fc)))
+                    .collect()
+            }
         }
         FunctionChain::RunPrefixedRegion(origin_child, dims_child, prefix_child) => {
             let prefix = exec_function_chain(context, prefix_child); // Clone the prefix function chain.
@@ -1642,15 +1652,19 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let index = BigUint::from_bytes_le(&exec_function_chain(context, index_child));
             type RegionPoint = (Point, Arc<Vec<AtomicU8Arc>>);
             let points: Vec<RegionPoint> = region.iter_full().collect();
-            let wrapped_index: usize = index
-                .mod_floor(&(points.len().try_into().unwrap()))
-                .try_into()
-                .unwrap();
-            let selected_point: &RegionPoint = points.get(wrapped_index).unwrap();
+            if points.is_empty() {
+                vec![]
+            } else {
+                let wrapped_index: usize = index
+                    .mod_floor(&(points.len().try_into().unwrap()))
+                    .try_into()
+                    .unwrap();
+                let selected_point: &RegionPoint = points.get(wrapped_index).unwrap();
 
-            FunctionChainLazyDeserializer::new(Arc::clone(&selected_point.1))
-                .flat_map(|fc| exec_function_chain(context, Box::new(fc)))
-                .collect()
+                FunctionChainLazyDeserializer::new(Arc::clone(&selected_point.1))
+                    .flat_map(|fc| exec_function_chain(context, Box::new(fc)))
+                    .collect()
+            }
         }
         FunctionChain::RunPrefixedRegionDense(origin_child, dims_child, prefix_child) => {
             let prefix = exec_function_chain(context, prefix_child); // Clone the prefix function chain.
@@ -2058,7 +2072,13 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 _dims::BytesPerDim::Four,
             );
             let n = BigUint::from_bytes_le(&exec_function_chain(context, n_child));
-            let n_usize = (n % dims.len()).to_usize().unwrap();
+            let n_usize;
+            if dims.is_empty() {
+                n_usize = 1;
+            } else {
+                n_usize = (n % dims.len()).to_usize().unwrap();
+            }
+
             let mut max_dims = output_point.clone();
 
             let view_space = context.clone();
@@ -2122,7 +2142,12 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             let folding_dimensions: usize = if origin.is_empty() {
                 0 // Default value when origin.len() is zero
             } else {
-                (target_dim.sub(origin.len()) % origin.len()).to_usize().unwrap()
+                (target_dim
+                    .checked_sub(&BigUint::from(origin.len()))
+                    .unwrap_or(BigUint::from(0u32))
+                    % origin.len())
+                .to_usize()
+                .unwrap()
             };
 
             // Initialize max_dims with the dimensions of the output_point
@@ -2164,86 +2189,90 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
         }
         FunctionChain::Similarity(origin_c, dims_c, origin_c2, dims_c2, dim_n_c) => {
             let origin_raw = exec_function_chain(context, origin_c);
-            let _origin = _dims::bytes_to_point(
-                &origin_raw,
-                _dims::BytesPerDim::Four,
-            );
+            let _origin = _dims::bytes_to_point(&origin_raw, _dims::BytesPerDim::Four);
             let dims_raw = exec_function_chain(context, dims_c);
-            let dims = _dims::bytes_to_point(
-                &dims_raw,
-                _dims::BytesPerDim::Four,
-            );
-            let origin2_raw =  exec_function_chain(context, origin_c2);
-            let _origin2 = _dims::bytes_to_point(
-                &origin2_raw,
-                _dims::BytesPerDim::Four,
-            );
+            let dims = _dims::bytes_to_point(&dims_raw, _dims::BytesPerDim::Four);
+            let origin2_raw = exec_function_chain(context, origin_c2);
+            let _origin2 = _dims::bytes_to_point(&origin2_raw, _dims::BytesPerDim::Four);
             let dims2_raw = exec_function_chain(context, dims_c2);
-            let dims2 = _dims::bytes_to_point(
-                &dims2_raw,
-                _dims::BytesPerDim::Four,
-            );
+            let dims2 = _dims::bytes_to_point(&dims2_raw, _dims::BytesPerDim::Four);
             let target_dim_raw = exec_function_chain(context, dim_n_c);
-            let target_dim = BigUint::from_bytes_le(&target_dim_raw); 
+            let target_dim = BigUint::from_bytes_le(&target_dim_raw);
 
             let output_ref_point_1: Vec<u8> = vec![123, 123, 123, 123];
             let output_point_1: Vec<u8> = vec![124, 0, 0, 0, 1];
             if dims.len() >= (target_dim.clone() % usize::MAX).to_usize().unwrap() {
                 // desparseToN
-                exec_function_chain(context, Box::new(fc!(
-                    DesparseToN,
-                        (Pass, [origin_raw]),
-                        (Pass, [dims_raw]),
-                        (Pass, [output_point_1]), 
-                        (Pass, [output_ref_point_1]), 
-                        (Pass, [target_dim_raw])
-                )));
-
+                exec_function_chain(
+                    context,
+                    Box::new(fc!(
+                        DesparseToN,
+                        [origin_raw],
+                        [dims_raw],
+                        [output_point_1],
+                        [output_ref_point_1],
+                        [target_dim_raw]
+                    )),
+                );
             } else if dims.len() < (target_dim.clone() % usize::MAX).to_usize().unwrap() {
-                exec_function_chain(context, Box::new(fc!(
-                    FoldToN,
-                        (Pass, [origin_raw]),
-                        (Pass, [dims_raw]),
-                        (Pass, [output_point_1]), 
-                        (Pass, [output_ref_point_1]), 
-                        (Pass, [target_dim_raw])
-                )));
+                exec_function_chain(
+                    context,
+                    Box::new(fc!(
+                        FoldToN,
+                        [origin_raw],
+                        [dims_raw],
+                        [output_point_1],
+                        [output_ref_point_1],
+                        [target_dim_raw]
+                    )),
+                );
             }
-            let output_correction_dims_1 = _dims::bytes_to_point(&exec_function_chain(context, Box::new(fc!(
-                Reference4, (Pass, [output_ref_point_1])
-            ))), _dims::BytesPerDim::Four);
-            let output_point_point_1 = _dims::bytes_to_point(&output_point_1, _dims::BytesPerDim::Four);
+            let output_correction_dims_1 = _dims::bytes_to_point(
+                &exec_function_chain(context, Box::new(fc!(Reference4, [output_ref_point_1]))),
+                _dims::BytesPerDim::Four,
+            );
+            let output_point_point_1 =
+                _dims::bytes_to_point(&output_point_1, _dims::BytesPerDim::Four);
 
             let output_ref_point_2: Vec<u8> = vec![124, 123, 123, 124];
             let output_point_2: Vec<u8> = vec![125, 0, 0, 0, 2];
             if dims.len() >= (target_dim.clone() % usize::MAX).to_usize().unwrap() {
                 // desparseToN
-                exec_function_chain(context, Box::new(fc!(
-                    DesparseToN,
-                        (Pass, [origin2_raw]),
-                        (Pass, [dims2_raw]),
-                        (Pass, [output_point_2]), 
-                        (Pass, [output_ref_point_2]), 
-                        (Pass, [target_dim_raw])
-                )));
-
+                exec_function_chain(
+                    context,
+                    Box::new(fc!(
+                        DesparseToN,
+                        [origin2_raw],
+                        [dims2_raw],
+                        [output_point_2],
+                        [output_ref_point_2],
+                        [target_dim_raw]
+                    )),
+                );
             } else if dims2.len() < (target_dim % usize::MAX).to_usize().unwrap() {
-                exec_function_chain(context, Box::new(fc!(
-                    FoldToN,
-                        (Pass, [origin2_raw]),
-                        (Pass, [dims2_raw]),
-                        (Pass, [output_point_2]), 
-                        (Pass, [output_ref_point_2]), 
-                        (Pass, [target_dim_raw])
-                )));
+                exec_function_chain(
+                    context,
+                    Box::new(fc!(
+                        FoldToN,
+                        [origin2_raw],
+                        [dims2_raw],
+                        [output_point_2],
+                        [output_ref_point_2],
+                        [target_dim_raw]
+                    )),
+                );
             }
-            let output_correction_dims_2 = _dims::bytes_to_point(&exec_function_chain(context, Box::new(fc!(
-                Reference4, (Pass, [output_ref_point_2])
-            ))), _dims::BytesPerDim::Four);
-            let output_point_point_2 = _dims::bytes_to_point(&output_point_2, _dims::BytesPerDim::Four);
+            let output_correction_dims_2 = _dims::bytes_to_point(
+                &exec_function_chain(context, Box::new(fc!(Reference4, [output_ref_point_2]))),
+                _dims::BytesPerDim::Four,
+            );
+            let output_point_point_2 =
+                _dims::bytes_to_point(&output_point_2, _dims::BytesPerDim::Four);
 
-            let compared = LiveRegionView::new(context, output_point_point_1, output_correction_dims_1);
-            let compared_with = LiveRegionView::new(context, output_point_point_2, output_correction_dims_2);
+            let compared =
+                LiveRegionView::new(context, output_point_point_1, output_correction_dims_1);
+            let compared_with =
+                LiveRegionView::new(context, output_point_point_2, output_correction_dims_2);
             let _fill_tool_1 = DesparsedRegionView::new(compared, 1);
             let _fill_tool_2 = DesparsedRegionView::new(compared_with, 1);
 
@@ -2259,37 +2288,37 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             */
 
             // compare regions to other regions that share points with them (in the compared space)
-            // add points to regions based on flood fill, iterate region num and create new region if 
+            // add points to regions based on flood fill, iterate region num and create new region if
             // new point is not similar to current point, after all points are processed, we start
             // score calc by:
             // generating a structure similarity based on largest overlaps between regions (shape)
             // sum of all largest overlaps for all regions is structural similarity score.
             // for each overlapping region, calc content based on representative (first/random)
-            // value diff. 
+            // value diff.
 
             let score_bytes = score.to_bytes_le();
             let max_score_bytes = max_score.to_bytes_le();
 
-            exec_function_chain(context, Box::new(fc!(
-                DivAsRatios,
-                    (Pass, [score_bytes]),
-                    (Pass, [max_score_bytes]),
-                    (Pass, [max_score_bytes]), 
-                    (Pass, [max_score_bytes])
-            )))
+            exec_function_chain(
+                context,
+                Box::new(fc!(
+                    DivAsRatios,
+                    [score_bytes],
+                    [max_score_bytes],
+                    [max_score_bytes],
+                    [max_score_bytes]
+                )),
+            )
         }
         FunctionChain::Isolate(child) => {
             let mut new_context = LocalSharedSpace::new();
             exec_function_chain(&mut new_context, child)
         }
-        FunctionChain::Raw { bytes } => {
-            bytes
-        }
+        FunctionChain::Raw { bytes } => bytes,
         _ => {
             vec![0]
         }
     };
-    dprintln!("End");
     res
 }
 
@@ -2321,16 +2350,12 @@ mod tests {
     }
 
     #[test]
-    fn mega_random_test_should_always_pass() {
+    fn fuzz() {
         let mut world = LocalSharedSpace::new();
-        let test_origin = vec![0];
-        let test_range = vec![0];
-        let test_chain = fc!(
-            RunRegionDense,
-             [test_origin],
-             [test_range]
-        );
-        dprintln!("{:?}",test_chain);
-        let _res = exec_function_chain(&mut world, Box::new(test_chain));
+        let test_origin = vec![200, 21, 99, 0, 5, 33, 43];
+        let test_range = vec![2, 20];
+        let test_chain = fc!(RunRegionDense, [test_origin], [test_range]);
+        let res = exec_function_chain(&mut world, Box::new(test_chain));
+        dprintln!("The result was: {:?}", res);
     }
 }
