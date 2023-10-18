@@ -9,6 +9,7 @@ use num_rational::Ratio;
 use num_traits::{CheckedDiv, CheckedSub, ToPrimitive, Zero};
 use std::cell::Cell;
 use std::ops::{Add, Mul, Sub};
+use debug_print::debug_println as dprintln;
 
 macro_rules! fc {
     ($variant:ident $(, $( $child:tt ),* )? ) => {
@@ -651,7 +652,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
     fc: Box<FunctionChain>,
 ) -> Vec<u8> {
     let maybe_dim: Cell<Option<_dims::BytesPerDim>> = Cell::new(None);
-    let res = match *fc {
+    let res = match *fc.clone() {
         //set maybe_dim if neccesary using if guard expression side-effects!
         // intentionally unreachable.
         //Two
@@ -2317,6 +2318,7 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
             vec![0]
         }
     };
+    dprintln!("{:?}: {:?}", fc, res);
     res
 }
 
