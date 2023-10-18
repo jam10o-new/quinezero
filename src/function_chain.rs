@@ -651,7 +651,6 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
     fc: Box<FunctionChain>,
 ) -> Vec<u8> {
     let maybe_dim: Cell<Option<_dims::BytesPerDim>> = Cell::new(None);
-    let _next: Vec<FunctionChain> = Vec::new();
     let res = match *fc {
         //set maybe_dim if neccesary using if guard expression side-effects!
         // intentionally unreachable.
@@ -2072,11 +2071,11 @@ pub fn exec_function_chain<S: SharedSpace + Clone>(
                 _dims::BytesPerDim::Four,
             );
             let n = BigUint::from_bytes_le(&exec_function_chain(context, n_child));
-            let n_usize = if dims.is_empty() {
-                1
+            let n_usize: usize = if dims.is_empty() {
+                1usize
             } else {
                 (n % dims.len()).to_usize().unwrap()
-            }
+            };
 
             let mut max_dims = output_point.clone();
 
@@ -2352,9 +2351,8 @@ mod tests {
     fn fuzz() {
         let mut world = LocalSharedSpace::new();
         let test_origin = vec![200, 21, 99, 0, 5, 33, 43];
-        let test_range = vec![2, 20];
+        let test_range = vec![57];
         let test_chain = fc!(RunRegionDense, [test_origin], [test_range]);
-        let res = exec_function_chain(&mut world, Box::new(test_chain));
-        dprintln!("The result was: {:?}", res);
+        let _res = exec_function_chain(&mut world, Box::new(test_chain));
     }
 }
